@@ -51,7 +51,18 @@ DELAY_BUFFER_SIZE = 6        # == delay_buffer_size
 D_INIT = 6                   # == d_init # TODO: placeholder, needs calculation
 CTRL_PERIOD_SEC = 1. / 30       # 30Hz
 
+import sys
+from IPython.core.debugger import Pdb
+class ForkedIPdb(Pdb):
+    """An ipdb subclass that can be used from a forked multiprocessing child."""
 
+    def interaction(self, *args, **kwargs):
+        _stdin = sys.stdin
+        try:
+            sys.stdin = open('/dev/stdin')
+            super().interaction(*args, **kwargs)
+        finally:
+            sys.stdin = _stdin
 
 class RealTimeChunkController:
     def __init__(self,
@@ -126,17 +137,21 @@ class RealTimeChunkController:
                     #
 
                     o   = copy.deepcopy(self.o_cur)
+                    
                     d   = max(self.Q)
+                    # d   = min(max(self.Q), 7) ### DUMMY CLIENT ###
                     # A_prev = copy.deepcopy(torch.cat([self.A_cur[s:, :], torch.zeros((s, self.A_cur.shape[1]), device=self.A_cur.device, dtype=self.A_cur.dtype)], dim=0)) # (H, D)
                     A_prev = np.concatenate([copy.deepcopy(self.A_cur[s:, :]), np.zeros((s, self.A_cur.shape[1]), dtype=self.A_cur.dtype)], axis=0) # (H, D)
 
                     inference_start = time.perf_counter()
                     self.C.release()
-                    color_print(f"\ns: {s}", style="yellow")
-                    color_print(f"o: {o}", style="yellow")
-                    color_print(f"d: {d}", style="yellow")  
+                    # color_print(f"\ns: {s}", style="yellow")
+                    # color_print(f"o: {o}", style="yellow")
+                    # state = o['obs']
+                    # color_print(f"state.shape: {state.shape}", style="yellow")
+                    # color_print(f"d: {d}", style="yellow")  
                     A_new = self._predict_action_rtc(o, A_prev, d)
-                    color_print(f"A_new: {A_new}", style="yellow")
+                    # color_print(f"A_new: {A_new}", style="yellow")
                     self.C.acquire()
 
                     self.A_cur = A_new
@@ -154,26 +169,32 @@ class RealTimeChunkController:
     
     def _predict_action_rtc(self, o, A_prev, d):
         A_new = self.policy.predict_action_with_training_rtc_flow(
-                    observations=o['imgs'], 
-                    states=torch.from_numpy(o['obs']).to(self.device),
+                    observations=o['imgs'],
+                    # states=torch.from_numpy(o['obs']).to(self.device),
+                    states=torch.from_numpy(np.zeros_like(o['obs'])).to(self.device), ### ZERO OUT ###
                     traj2ds=None,
                     instructions=o['text_instructions'],
                     num_inference_steps = 8,
+                    # num_inference_steps = 4, ### DUMMY CLIENT ###
                     prev_actions=torch.from_numpy(A_prev[np.newaxis, :, :]).to(self.device), # (H, D) -> (1, H, D)
                     inference_delay=d,
                     max_delay=8
                 )[0].float().detach().cpu().numpy() # (1, H, D) -> (H, D)
+
+        # A_new[..., -8:] = 0.0 ### ZERO OUT ###
         return A_new
     
     def _predict_action(self, o):
         normalized_actions = self.policy.predict_action(
                     observations=o['imgs'], 
-                    states=torch.from_numpy(o['obs']).to(self.device),
+                    # states=torch.from_numpy(o['obs']).to(self.device),
+                    states=torch.from_numpy(np.zeros_like(o['obs'])).to(self.device), ### ZERO OUT ###
                     traj2ds=None,
                     instructions=o['text_instructions'],
                     num_inference_steps = 8,
                 )[0].float().detach().cpu().numpy() # (1, H, D) -> (H, D)
         
+        # normalized_actions[..., -8:] = 0.0 ### ZERO OUT ###
         return normalized_actions
 
 
@@ -472,6 +493,13 @@ class Server:
             # 2. Execute step
             action = self.controller.step(obs_next) # (1, D)
             pred_action = self._postprocess_action(action) # (1, D)
+
+            # color_print("\naction.shape:", action.shape, style="yellow")
+            # color_print("action:", action, style="yellow")
+            # color_print("pred_action.shape:", pred_action.shape, style="yellow")
+            # color_print("pred_action:", pred_action, style="yellow")
+            pred_action[..., -5] = 0.75 # need to hardcode 0.75 for torso height here? ### ZERO OUT ###
+            # color_print("pred_action:", pred_action, style="yellow")
             
             # 3. Update latest_action
             with self.action_lock:

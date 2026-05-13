@@ -29,6 +29,19 @@ from tqdm import tqdm
 CODE_VERSION = "v2.1"
 FPS = 30
 
+import sys
+from IPython.core.debugger import Pdb
+class ForkedIPdb(Pdb):
+    """An ipdb subclass that can be used from a forked multiprocessing child."""
+
+    def interaction(self, *args, **kwargs):
+        _stdin = sys.stdin
+        try:
+            sys.stdin = open('/dev/stdin')
+            super().interaction(*args, **kwargs)
+        finally:
+            sys.stdin = _stdin
+
 # disable_progress_bar()
 set_verbosity_error()
 
@@ -140,6 +153,7 @@ class HE2LeRobotConverter:
     @staticmethod
     def get_robot_type(ep_dir: Path) -> str:
         episode_data = read_json_list(ep_dir / "data.json")
+        # print(f"len(episode_data):", len(episode_data))
         return episode_data[-1].get("robot_type", "g1")
         
 
@@ -203,9 +217,14 @@ class HE2LeRobotConverter:
         arm_joints = [float(x) for x in states.get("arm_state", [])]
         leg_joints = [float(x) for x in states.get("leg_state", [])]
         hand_joints = [float(x) for x in states.get("hand_state", [])]
-        torso_rpy = [float(x) for x in prev_rpy_height["torso_rpy"]]
-        torso_height = [float(prev_rpy_height["torso_height"])]
+        torso_rpy = [float(x) for x in np.zeros_like(prev_rpy_height["torso_rpy"])] ### ZERO OUT ###
+        torso_height = [float(np.zeros_like(prev_rpy_height["torso_height"]))] ### ZERO OUT ###
         tactile = self.load_tactile(states)
+
+        assert len(hand_joints) == 14, f"len(hand_joints): {len(hand_joints)}"
+        assert len(arm_joints) == 14, f"len(arm_joints): {len(arm_joints)}"
+        assert len(torso_rpy) == 3, f"len(torso_rpy): {len(torso_rpy)}"
+        assert len(torso_height) == 1, f"len(torso_height): {len(torso_height)}"
 
         return {
             "states": hand_joints + arm_joints + torso_rpy + torso_height
@@ -236,24 +255,41 @@ class HE2LeRobotConverter:
         if sq is not None:
             body_joints = [float(x) for x in sq]
 
-        leg_joints = body_joints[0:15]
-        arm_joints = body_joints[15:29]
+        # leg_joints = body_joints[0:15]
+        # arm_joints = body_joints[15:29]
+        arm_joints = body_joints
 
-        rpy = frame["actions"]["torso_rpy"]
-        height = frame["actions"]["torso_height"]
+        ### ZERO OUT ###
+        # rpy = frame["actions"]["torso_rpy"]
+        # height = frame["actions"]["torso_height"]
+        rpy = [0.0, 0.0, 0.0]
+        height = 0.0
         rpy = [float(x) for x in rpy]
         height = [float(height)]
 
-        torso_vx = actions.get("torso_vx")
-        torso_vy = actions.get("torso_vy")
-        torso_vyaw = actions.get("torso_vyaw")
-        torso_dyaw = actions.get("torso_dyaw")
-        target_yaw = actions.get("target_yaw")
+        ### ZERO OUT ###
+        # torso_vx = actions.get("torso_vx")
+        # torso_vy = actions.get("torso_vy")
+        # torso_vyaw = actions.get("torso_vyaw")
+        # torso_dyaw = actions.get("torso_dyaw")
+        # target_yaw = actions.get("target_yaw")
+        torso_vx = 0.0
+        torso_vy = 0.0
+        torso_vyaw = 0.0
+        torso_dyaw = 0.0
+        target_yaw = 0.0
         torso_vx = [float(torso_vx)]
         torso_vy = [float(torso_vy)]
         torso_vyaw = [float(torso_vyaw)]
         torso_dyaw = [float(torso_dyaw)]
         target_yaw = [float(target_yaw)]
+
+        
+        assert len(hand_joints) == 14, f"len(hand_joints): {len(hand_joints)}"
+        assert len(arm_joints) == 14, f"len(arm_joints): {len(arm_joints)}"
+        assert len(rpy) == 3, f"len(rpy): {len(rpy)}"
+        assert len(height) == 1, f"len(height): {len(height)}"
+
         # assert False, "check here dyaw or target yaw"
         return hand_joints + arm_joints + rpy + height + torso_vx + torso_vy + torso_vyaw + target_yaw # torso_dyaw # 36
 
@@ -268,132 +304,141 @@ class HE2LeRobotConverter:
         # pr = cProfile.Profile()
         # pr.enable()
 
-        try:
-            chunk_path = out_base / f"chunk-{episode_index // chunks_size:03d}"
-            chunk_path.mkdir(parents=True, exist_ok=True)
-            parquet_path = chunk_path / f"episode_{episode_index:06d}.parquet"
+        # try:
+        chunk_path = out_base / f"chunk-{episode_index // chunks_size:03d}"
+        chunk_path.mkdir(parents=True, exist_ok=True)
+        parquet_path = chunk_path / f"episode_{episode_index:06d}.parquet"
 
-            vid_chunk_dir = out_base.parent / "videos" / f"chunk-{episode_index // chunks_size:03d}" / "egocentric"
-            vid_chunk_dir.mkdir(parents=True, exist_ok=True)
-            vid_path = vid_chunk_dir / f"episode_{episode_index:06d}.mp4"
+        vid_chunk_dir = out_base.parent / "videos" / f"chunk-{episode_index // chunks_size:03d}" / "egocentric"
+        vid_chunk_dir.mkdir(parents=True, exist_ok=True)
+        vid_path = vid_chunk_dir / f"episode_{episode_index:06d}.mp4"
 
-            data_list = read_json_list(episode_dir / "data.json")
-            assert len(data_list) > 0, f"data.json malformed in {episode_dir}"
+        data_list = read_json_list(episode_dir / "data.json")
+        assert len(data_list) > 0, f"data.json malformed in {episode_dir}"
 
-            def safe_path(episode_dir, f, key):
-                p = f.get(key)
-                return (episode_dir / p).resolve() if p else None
+        def safe_path(episode_dir, f, key):
+            p = f.get(key)
+            return (episode_dir / p).resolve() if p else None
 
-            rgb_paths   = [safe_path(episode_dir, f, "image") for f in data_list]
-            depth_paths = [safe_path(episode_dir, f, "depth") for f in data_list]
+        rgb_paths   = [safe_path(episode_dir, f, "image") for f in data_list]
+        depth_paths = [safe_path(episode_dir, f, "depth") for f in data_list]
 
-            def iter_depths():
-                for p in depth_paths:
-                    yield self.load_depth(p) if p else np.full((480, 640), np.nan, np.float32)
+        def iter_depths():
+            for p in depth_paths:
+                yield self.load_depth(p) if p else np.full((480, 640), np.nan, np.float32)
 
-            rows: List[Dict[str, Any]] = []
-            prev_rpy_height = {
-                "torso_rpy": [0.0,0.0,0.0],
-                "torso_height": 0.75,
-            }
+        rows: List[Dict[str, Any]] = []
+        # prev_rpy_height = {
+        #     "torso_rpy": [0.0,0.0,0.0],
+        #     "torso_height": 0.75,
+        # }
+        prev_rpy_height = { ### ZERO OUT ###
+            "torso_rpy": [0.0,0.0,0.0],
+            "torso_height": 0.0,
+        }
 
-            for i, (frame, depth_arr) in enumerate(zip(data_list, iter_depths())):
-                obs = self.build_obs(prev_rpy_height, frame, depth_arr)
-                act = self.build_act(frame)
 
-                rows.append(
-                    {
-                        **obs,
-                        "action": act,
-                        "timestamp": i * (1.0 / FPS),
-                        "frame_index": i,
-                        "episode_index": episode_index,
-                        "index": i,  # TODO: global index if needed
-                        "task_index": task_index,
-                        "next.done": (i == len(data_list) - 1),
-                    }
-                )
+        for i, (frame, depth_arr) in enumerate(zip(data_list, iter_depths())):
+            obs = self.build_obs(prev_rpy_height, frame, depth_arr)
+            act = self.build_act(frame)
+            assert len(obs["states"]) == 32, f"len(obs['states']): {len(obs['states'])}"
+            assert len(act) == 36, f"len(act): {len(act)}"
 
-                prev_rpy_height["torso_rpy"] = frame["actions"]["torso_rpy"]
-                prev_rpy_height["torso_height"] = frame["actions"]["torso_height"]
+            rows.append(
+                {
+                    **obs,
+                    "action": act,
+                    "timestamp": i * (1.0 / FPS),
+                    "frame_index": i,
+                    "episode_index": episode_index,
+                    "index": i,  # TODO: global index if needed
+                    "task_index": task_index,
+                    "next.done": (i == len(data_list) - 1),
+                }
+            )
 
-            assert rows, f"No valid rows in episode {episode_index}"
+            # prev_rpy_height["torso_rpy"] = frame["actions"]["torso_rpy"] ### ZERO OUT ###
+            # prev_rpy_height["torso_height"] = frame["actions"]["torso_height"]
 
-            stats = None
-            for r in rows:
-                a = np.array(r["action"], dtype=np.float32)
-                if stats is None:
-                    stats = {"min": a.copy(), "max": a.copy(), "sum": a.copy(), "sumsq": a**2, "count": 1}
-                else:
-                    stats["min"] = np.minimum(stats["min"], a)
-                    stats["max"] = np.maximum(stats["max"], a)
-                    stats["sum"] += a
-                    stats["sumsq"] += a**2
-                    stats["count"] += 1
+        assert rows, f"No valid rows in episode {episode_index}"
 
-            assert stats is not None, f"No valid actions in episode {episode_index}"
-            stats = {k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in stats.items()}
+        
 
-            tmp_dir = (out_base / f"_tmp_ep_{episode_index:06d}")
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            parquet_tmp = tmp_dir / "episode.parquet"
-            video_tmp   = tmp_dir / "episode.mp4"
+        stats = None
+        for r in rows:
+            a = np.array(r["action"], dtype=np.float32)
+            if stats is None:
+                stats = {"min": a.copy(), "max": a.copy(), "sum": a.copy(), "sumsq": a**2, "count": 1}
+            else:
+                stats["min"] = np.minimum(stats["min"], a)
+                stats["max"] = np.maximum(stats["max"], a)
+                stats["sum"] += a
+                stats["sumsq"] += a**2
+                stats["count"] += 1
 
-            ds = Dataset.from_list(rows, features=self.features)
-            ds.to_parquet(str(parquet_tmp)) 
+        assert stats is not None, f"No valid actions in episode {episode_index}"
+        stats = {k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in stats.items()}
 
-            def frame_iter():
-                for p in rgb_paths:
-                    yield iio.imread(p)
+        tmp_dir = (out_base / f"_tmp_ep_{episode_index:06d}")
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        parquet_tmp = tmp_dir / "episode.parquet"
+        video_tmp   = tmp_dir / "episode.mp4"
 
-            iio.imwrite(video_tmp, list(frame_iter()), fps=FPS, codec="libx264")
-            # iio.imwrite(
-            #     video_tmp, 
-            #     list(frame_iter()), 
-            #     fps=FPS, 
-            #     codec="libx264",
-            #     output_params=[
-            #         "-g", "1",              # GOP size = 1，每帧都是关键帧
-            #         "-qp", "0",             # 量化参数 = 0，完全无损
-            #         "-preset", "medium",    # 编码速度（可选：fast/medium/slow）
-            #         "-pix_fmt", "yuv444p"   # 完整色彩采样
-            #     ]
-            # )
-            os.replace(parquet_tmp, parquet_path)
-            os.replace(video_tmp, vid_path)
-            shutil.rmtree(tmp_dir)
+        ds = Dataset.from_list(rows, features=self.features)
+        ds.to_parquet(str(parquet_tmp)) 
 
-            action_mean = (np.array(stats["sum"]) / stats["count"]).tolist()
-            action_std = (
-                np.sqrt(np.maximum(np.array(stats["sumsq"]) / stats["count"] - np.square(np.array(stats["sum"]) / stats["count"]), 0))
-            ).tolist()
+        def frame_iter():
+            for p in rgb_paths:
+                yield iio.imread(p)
 
-            episode_stats = {
-                "episode_index": episode_index,
-                "stats": {
-                    "action": {
-                        "min": stats["min"],
-                        "max": stats["max"],
-                        "mean": action_mean,
-                        "std": action_std,
-                        "count": [len(rows)],
-                    },
-                    "timestamp": {
-                        "min": [0.0],
-                        "max": [(len(rows) - 1) / FPS],
-                        "mean": [((len(rows) - 1) / 2) / FPS],
-                        "std": [len(rows) / (2 * FPS * math.sqrt(3))],
-                        "count": [len(rows)],
-                    },
+        iio.imwrite(video_tmp, list(frame_iter()), fps=FPS, codec="libx264")
+        # iio.imwrite(
+        #     video_tmp, 
+        #     list(frame_iter()), 
+        #     fps=FPS, 
+        #     codec="libx264",
+        #     output_params=[
+        #         "-g", "1",              # GOP size = 1，每帧都是关键帧
+        #         "-qp", "0",             # 量化参数 = 0，完全无损
+        #         "-preset", "medium",    # 编码速度（可选：fast/medium/slow）
+        #         "-pix_fmt", "yuv444p"   # 完整色彩采样
+        #     ]
+        # )
+        os.replace(parquet_tmp, parquet_path)
+        os.replace(video_tmp, vid_path)
+        shutil.rmtree(tmp_dir)
+
+        action_mean = (np.array(stats["sum"]) / stats["count"]).tolist()
+        action_std = (
+            np.sqrt(np.maximum(np.array(stats["sumsq"]) / stats["count"] - np.square(np.array(stats["sum"]) / stats["count"]), 0))
+        ).tolist()
+
+        episode_stats = {
+            "episode_index": episode_index,
+            "stats": {
+                "action": {
+                    "min": stats["min"],
+                    "max": stats["max"],
+                    "mean": action_mean,
+                    "std": action_std,
+                    "count": [len(rows)],
                 },
-            }
-            meta_dir = out_base.parent / "meta"
-            meta_dir.mkdir(parents=True, exist_ok=True)
-            append_jsonl_line_atomic(meta_dir / "episodes_stats.jsonl", episode_stats)
-        except Exception as e:
-            print(f"Error processing episode {episode_index} in {episode_dir}: {e}")
-            exit(-1)
-            # return episode_index, 0, {}
+                "timestamp": {
+                    "min": [0.0],
+                    "max": [(len(rows) - 1) / FPS],
+                    "mean": [((len(rows) - 1) / 2) / FPS],
+                    "std": [len(rows) / (2 * FPS * math.sqrt(3))],
+                    "count": [len(rows)],
+                },
+            },
+        }
+        meta_dir = out_base.parent / "meta"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        append_jsonl_line_atomic(meta_dir / "episodes_stats.jsonl", episode_stats)
+        # except Exception as e:
+        #     print(f"Error processing episode {episode_index} in {episode_dir}: {e}")
+        #     exit(-1)
+        #     # return episode_index, 0, {}
 
 
         # pr.disable()
@@ -448,6 +493,7 @@ class HE2LeRobotConverter:
                     unit="ep",
                 )
             )
+
 
         meta_dir = work_dir / "meta"
         meta_dir.mkdir(parents=True, exist_ok=True)
@@ -641,3 +687,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

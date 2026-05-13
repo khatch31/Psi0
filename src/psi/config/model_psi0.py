@@ -32,6 +32,17 @@ class Psi0ModelConfig(ModelConfig):
     # observations
     odim: int = 15 # 32
 
+    ### CLAUDE ### Add flag to disable proprioception conditioning by zeroing states fed to the model
+    zero_states: bool = False
+    ### END CLAUDE ###
+
+    ### CLAUDE ### Add flag to zero out the last 8 elements of the action target
+    ###            (rpy[3] + height[1] + torso_vx[1] + torso_vy[1] + torso_vyaw[1] + target_yaw[1] = 8).
+    ###            When True, the model is trained to predict 0 for those dims and the
+    ###            L1 eval metric is computed against zeroed ground truth for consistency.
+    zero_last_8_actions: bool = False
+    ### END CLAUDE ###
+
     # conditions
     n_conditions: Optional[int] = 1
     token_fusion: Optional[str] = "concat"  # "concat", "cross", "perceiver"

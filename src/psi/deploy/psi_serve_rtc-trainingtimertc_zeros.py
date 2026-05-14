@@ -80,13 +80,18 @@ class RealTimeChunkController:
         self.s_min = min_exec_horizon
 
         self.t: int = 0
+        self.inference_counter: int = 0
+        ### CLAUDE ### Add timestamp for organizing saved inference data
+        from datetime import datetime
+        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ### END CLAUDE ###
         assert o_first != None, "please provide o_first"
 
         A_first = self._predict_action(o_first) # (H, D)
 
         # warmup the model
         for i in range (2):
-            _ = self._predict_action_rtc(copy.deepcopy(o_first), np.concatenate([copy.deepcopy(A_first[self.s_min:, :]), np.zeros((self.s_min, A_first.shape[1]), dtype=A_first.dtype)], axis=0), d_init)
+            _ = self._predict_action_rtc(copy.deepcopy(o_first), np.concatenate([copy.deepcopy(A_first[self.s_min:, :]), np.zeros((self.s_min, A_first.shape[1]), dtype=A_first.dtype)], axis=0), d_init, self.t)
         print("Model warmed up")
 
         self.A_cur = A_first # (H, D)
@@ -150,7 +155,7 @@ class RealTimeChunkController:
                     # state = o['obs']
                     # color_print(f"state.shape: {state.shape}", style="yellow")
                     # color_print(f"d: {d}", style="yellow")  
-                    A_new = self._predict_action_rtc(o, A_prev, d)
+                    A_new = self._predict_action_rtc(o, A_prev, d, s)
                     # color_print(f"A_new: {A_new}", style="yellow")
                     self.C.acquire()
 
@@ -167,7 +172,7 @@ class RealTimeChunkController:
                     print("\n[FATAL] Stopping program...")
                     os._exit(1)  # 强制退出整个程序
     
-    def _predict_action_rtc(self, o, A_prev, d):
+    def _predict_action_rtc(self, o, A_prev, d, s):
         A_new = self.policy.predict_action_with_training_rtc_flow(
                     observations=o['imgs'],
                     # states=torch.from_numpy(o['obs']).to(self.device),
@@ -182,19 +187,79 @@ class RealTimeChunkController:
                 )[0].float().detach().cpu().numpy() # (1, H, D) -> (H, D)
 
         # A_new[..., -8:] = 0.0 ### ZERO OUT ###
+
+        ### CLAUDE ### Save observations and actions to disk for debugging/analysis
+        import pickle
+        save_dir = Path("/home/songlin/Projects/psi0_kyle/psi0_workspace/saved_inference") / self.timestamp
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        obs_file = save_dir / f"obs_{s}_{self.inference_counter}.pkl"
+        actions_file = save_dir / f"actions_{s}_{self.inference_counter}.pkl"
+
+        with open(obs_file, 'wb') as f:
+            pickle.dump(o, f)
+
+        with open(actions_file, 'wb') as f:
+            pickle.dump(A_new, f)
+        ### END CLAUDE ###
+
+
+        # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
+        # o["imgs"][0][0].size
+        images = o["imgs"]
+
+        ### CLAUDE ### Save images to PNG files for debugging/analysis
+        for batch_idx, batch in enumerate(images):
+            for img_idx, img in enumerate(batch):
+                img_file = save_dir / f"img_{s}_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
+                img.save(img_file)
+        ### END CLAUDE ### 
+
+        self.inference_counter += 1
+
         return A_new
     
     def _predict_action(self, o):
         normalized_actions = self.policy.predict_action(
-                    observations=o['imgs'], 
+                    observations=o['imgs'],
                     # states=torch.from_numpy(o['obs']).to(self.device),
                     states=torch.from_numpy(np.zeros_like(o['obs'])).to(self.device), ### ZERO OUT ###
                     traj2ds=None,
                     instructions=o['text_instructions'],
                     num_inference_steps = 8,
                 )[0].float().detach().cpu().numpy() # (1, H, D) -> (H, D)
-        
+
         # normalized_actions[..., -8:] = 0.0 ### ZERO OUT ###
+
+        ### CLAUDE ### Save initial observations and actions to disk for debugging/analysis
+        import pickle
+        save_dir = Path("/home/songlin/Projects/psi0_kyle/psi0_workspace/saved_inference") / self.timestamp
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        obs_file = save_dir / f"obs_initial_{self.inference_counter}.pkl"
+        actions_file = save_dir / f"actions_initial_{self.inference_counter}.pkl"
+
+        with open(obs_file, 'wb') as f:
+            pickle.dump(o, f)
+
+        with open(actions_file, 'wb') as f:
+            pickle.dump(normalized_actions, f)
+        ### END CLAUDE ###
+
+        # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
+        # o["imgs"][0][0].size
+        images = o["imgs"]
+
+        ### CLAUDE ### Save images to PNG files for debugging/analysis
+        for batch_idx, batch in enumerate(images):
+            for img_idx, img in enumerate(batch):
+                img_file = save_dir / f"img_initial_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
+                img.save(img_file)
+        ### END CLAUDE ### 
+
+
+        self.inference_counter += 1
+
         return normalized_actions
 
 

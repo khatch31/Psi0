@@ -4,7 +4,8 @@ PORT=8014
 # TASK="Spray the bowl and wipe it and stack it up."
 # TASK="Pick bottle and turn and pour into cup."
 # TASK="Pick toys into box and lift and turn and put on the chair new"
-TASK="g1/Pick_bottle_and_turn_and_pour_into_cup"
+# TASK="g1/Pick_bottle_and_turn_and_pour_into_cup"
+TASK="default/open_a_drawer_g1"
 
 cd "$(dirname "$0")/../teleop"
 

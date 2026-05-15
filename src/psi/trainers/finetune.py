@@ -14,6 +14,11 @@ from torch.utils.data import DataLoader
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor, Qwen3VLProcessor
 from psi.trainers.qwen3vl_mixin import PaddedCollatorForTogether
 
+from rich.console import Console
+console = Console()
+def color_print(*args, markup=False, style="red"):
+    console.print(*args, style=style, markup=markup)
+
 if TYPE_CHECKING:    
     from psi.config.config import TrainConfig
     from psi.config.model_psi0 import Psi0ModelConfig
@@ -385,7 +390,14 @@ class FinetuneTrainer(Trainer):
     def inference(self, eval_model, repacked_batch):
 
         traj2ds = repacked_batch["traj2ds"] if "traj2ds" in repacked_batch else None  # (B, 3, H, W)
+        ### CLAUDE ### Zero out proprioceptive states at eval/inference time when --model.zero-states is set
+        # obs = repacked_batch["states"]  # (B,1,M)
         obs = repacked_batch["states"]  # (B,1,M)
+        assert self.model_cfg.zero_states
+        if self.model_cfg.zero_states:
+            obs = torch.zeros_like(obs)
+            # color_print("obs.sum():", obs.sum(), style="green")
+        ### END CLAUDE ###
 
         # imgs_in = {"cam0": view_features}  # views # TODO support multi-view
         bsz = obs.shape[0]
@@ -446,12 +458,23 @@ class FinetuneTrainer(Trainer):
         val_loss_list = []
         action_l1_err_list = []
 
+        
+
         for val_step, val_batch in enumerate(val_progress_bar):
             val_batch = batch_str_to_tensor(val_batch)
             # mask = val_batch["mask"]
             mask = torch.ones_like(val_batch["actions"]) # FIXME
             gt_actions = val_batch["actions"]  # (B, Tp, Da)
             # gt_actions = self.data_cfg.data_transforms.normalize_action(repacked_batch[1])
+            ### CLAUDE ### Zero last 8 dims of gt for L1 eval when --model.zero-last-8-actions is set,
+            ###            so we measure pred against the zeroed target the model was trained on.
+            assert self.model_cfg.zero_last_8_actions
+            if self.model_cfg.zero_last_8_actions:
+                gt_actions = gt_actions.clone()
+                # color_print(f"gt_actions[..., -8:].sum(): {gt_actions[..., -8:].sum()}", style="green")
+                assert gt_actions[..., -8:].sum() == 0, f"gt_actions[..., -8:]: {gt_actions[..., -8:]}"
+                gt_actions[..., -8:] = 0.0
+            ### END CLAUDE ###
 
             # Tp -> predicted action horizon, Da -> action dim
             B, Tp, Da = gt_actions.shape
@@ -524,6 +547,20 @@ class FinetuneTrainer(Trainer):
     def forward_and_loss(self, model, batch) -> dict[str, torch.Tensor]:
         bsz, Tp, Da = batch["actions"].shape
 
+        ### CLAUDE ### Zero out the last 8 action dims (rpy/height/torso vx,vy,vyaw/target_yaw)
+        ###            when --model.zero-last-8-actions is set, so the model is trained to predict
+        ###            zero for those dims. We mutate a clone (not batch["actions"]) to avoid
+        ###            polluting the batch for downstream consumers (e.g. evaluate() reads
+        ###            val_batch["actions"] directly for L1 metrics).
+        assert self.model_cfg.zero_last_8_actions
+        if self.model_cfg.zero_last_8_actions:
+            zeroed_actions = batch["actions"].clone()
+            # color_print(f"zeroed_actions[..., -8:].sum(): {zeroed_actions[..., -8:].sum()}", style="green")
+            assert zeroed_actions[..., -8:].sum() == 0, f"zeroed_actions[..., -8:]: {zeroed_actions[..., -8:]}"
+            zeroed_actions[..., -8:] = 0.0
+            batch = {**batch, "actions": zeroed_actions}
+        ### END CLAUDE ###
+
         if self.noise_scheduler_name == "ddpm":
             timesteps = torch.randint(
                 low=0, high=self.train_diffusion_steps, size=(bsz,), device=self.device
@@ -568,13 +605,22 @@ class FinetuneTrainer(Trainer):
         else:
             raise ValueError
 
+        ### CLAUDE ### Zero out proprioceptive states at training time when --model.zero-states is set
+        # states_in = batch["states"]
+        assert self.model_cfg.zero_states
+        states_in = torch.zeros_like(batch["states"]) if self.model_cfg.zero_states else batch["states"]
+        # color_print(f"states_in.sum(): {states_in.sum()}", style="green")
+        ### END CLAUDE ###
         model_output = model(
             input_ids=batch["input_ids"],#####
             attention_mask=batch["attention_mask"], # vlm related
             pixel_values=batch["pixel_values"],
             image_grid_thw=batch["image_grid_thw"], ####
             action_samples=noisy_actions,  # (B,Tp,Da)
-            states=batch["states"],  # (B,1,M)
+            ### CLAUDE ### Use the (possibly zeroed) states tensor instead of reading batch directly
+            # states=batch["states"],  # (B,1,M)
+            states=states_in,  # (B,1,M)
+            ### END CLAUDE ###
             timestep=timesteps,
             traj2ds=batch["traj2ds"] if "traj2ds" in batch else None,  # (B, C, 3, H, W)
             return_dict=True,

@@ -6,8 +6,10 @@ which python
 export CUDA_VISIBLE_DEVICES=0
 echo "Training with $nprocs GPUs, which is/are $CUDA_VISIBLE_DEVICES"
 
+echo "PSI_HOME: $PSI_HOME"
+
 # CHECKPOINT_DIR=/home/ubuntu/Desktop/world_models_project/psi0_workspace/training_output/finetune/open_a_drawer_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2605062254
-CHECKPOINT_DIR=/home/songlin/Projects/psi0_kyle/psi0_workspace/training_output/finetune/open_a_drawer_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2605062254
+CHECKPOINT_DIR=$PSI_HOME/training_output/finetune/open_a_drawer_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2605062254
 CHECKPOINT_STEP=40000
 
 # python src/psi/deploy/psi_serve_rtc-trainingtimertc.py \

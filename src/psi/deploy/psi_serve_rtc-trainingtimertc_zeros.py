@@ -18,6 +18,8 @@ from PIL import Image
 from pathlib import Path
 from typing import Dict, Any, List
 import os.path as osp
+import pickle
+from datetime import datetime
 
 from rich.console import Console
 console = Console()
@@ -51,7 +53,7 @@ DELAY_BUFFER_SIZE = 6        # == delay_buffer_size
 D_INIT = 6                   # == d_init # TODO: placeholder, needs calculation
 CTRL_PERIOD_SEC = 1. / 30       # 30Hz
 
-PSI_HOME = os.environ("PSI_HOME")
+PSI_HOME = os.environ["PSI_HOME"]
 
 color_print("PSI_HOME:", PSI_HOME, style="cyan")
 
@@ -75,7 +77,8 @@ class RealTimeChunkController:
                  min_exec_horizon: int = MIN_EXEC_HORIZON,
                  delay_buf_size: int = DELAY_BUFFER_SIZE,
                  d_init: int = D_INIT,
-                 o_first: np.ndarray | None = None): # type: ignore
+                 o_first: np.ndarray | None = None,
+                 timestamp: str = None): # type: ignore
 
         self.policy : Psi0Model = policy
         self.device = self.policy.device
@@ -85,10 +88,11 @@ class RealTimeChunkController:
 
         self.t: int = 0
         self.inference_counter: int = 0
-        ### CLAUDE ### Add timestamp for organizing saved inference data
-        from datetime import datetime
-        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        ### END CLAUDE ###
+
+        # from datetime import datetime
+        # self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.timestamp = timestamp
+        color_print(f"[RealTimeChunkController] self.timestamp: {self.timestamp}", style="green")
         assert o_first != None, "please provide o_first"
 
         A_first = self._predict_action(o_first) # (H, D)
@@ -147,8 +151,8 @@ class RealTimeChunkController:
 
                     o   = copy.deepcopy(self.o_cur)
                     
-                    d   = max(self.Q)
-                    # d   = min(max(self.Q), 7) ### DUMMY CLIENT ###
+                    # d   = max(self.Q)
+                    d   = min(max(self.Q), 7) ### DUMMY CLIENT ###
                     # A_prev = copy.deepcopy(torch.cat([self.A_cur[s:, :], torch.zeros((s, self.A_cur.shape[1]), device=self.A_cur.device, dtype=self.A_cur.dtype)], dim=0)) # (H, D)
                     A_prev = np.concatenate([copy.deepcopy(self.A_cur[s:, :]), np.zeros((s, self.A_cur.shape[1]), dtype=self.A_cur.dtype)], axis=0) # (H, D)
 
@@ -183,8 +187,8 @@ class RealTimeChunkController:
                     states=torch.from_numpy(np.zeros_like(o['obs'])).to(self.device), ### ZERO OUT ###
                     traj2ds=None,
                     instructions=o['text_instructions'],
-                    num_inference_steps = 8,
-                    # num_inference_steps = 4, ### DUMMY CLIENT ###
+                    # num_inference_steps = 8,
+                    num_inference_steps = 4, ### DUMMY CLIENT ###
                     prev_actions=torch.from_numpy(A_prev[np.newaxis, :, :]).to(self.device), # (H, D) -> (1, H, D)
                     inference_delay=d,
                     max_delay=8
@@ -192,32 +196,33 @@ class RealTimeChunkController:
 
         # A_new[..., -8:] = 0.0 ### ZERO OUT ###
 
-        ### CLAUDE ### Save observations and actions to disk for debugging/analysis
-        import pickle
-        save_dir = Path(f"{PSI_HOME}/saved_inference") / self.timestamp
-        save_dir.mkdir(parents=True, exist_ok=True)
+        save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/policy_time_inference")
+        obs_dir = save_dir / "observations"
+        act_dir = save_dir / "actions"
+        img_dir = save_dir / "images"
+        obs_dir.mkdir(parents=True, exist_ok=True)
+        act_dir.mkdir(parents=True, exist_ok=True)
+        img_dir.mkdir(parents=True, exist_ok=True)
 
-        obs_file = save_dir / f"obs_{s}_{self.inference_counter}.pkl"
-        actions_file = save_dir / f"actions_{s}_{self.inference_counter}.pkl"
+        obs_file = obs_dir / f"obs_{s}_{self.inference_counter}.pkl"
+        actions_file = act_dir / f"actions_{s}_{self.inference_counter}.npy"
 
         with open(obs_file, 'wb') as f:
             pickle.dump(o, f)
 
-        with open(actions_file, 'wb') as f:
-            pickle.dump(A_new, f)
-        ### END CLAUDE ###
+        # with open(actions_file, 'wb') as f:
+        #     pickle.dump(A_new, f)
+        np.save(actions_file, A_new)
 
 
         # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
         # o["imgs"][0][0].size
         images = o["imgs"]
 
-        ### CLAUDE ### Save images to PNG files for debugging/analysis
         for batch_idx, batch in enumerate(images):
             for img_idx, img in enumerate(batch):
-                img_file = save_dir / f"img_{s}_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
+                img_file = img_dir / f"img_{s}_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
                 img.save(img_file)
-        ### END CLAUDE ### 
 
         self.inference_counter += 1
 
@@ -234,21 +239,24 @@ class RealTimeChunkController:
                 )[0].float().detach().cpu().numpy() # (1, H, D) -> (H, D)
 
         # normalized_actions[..., -8:] = 0.0 ### ZERO OUT ###
+        
+        save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/policy_time_inference")
+        obs_dir = save_dir / "observations"
+        act_dir = save_dir / "actions"
+        img_dir = save_dir / "images"
+        obs_dir.mkdir(parents=True, exist_ok=True)
+        act_dir.mkdir(parents=True, exist_ok=True)
+        img_dir.mkdir(parents=True, exist_ok=True)
 
-        ### CLAUDE ### Save initial observations and actions to disk for debugging/analysis
-        import pickle
-        save_dir = Path(f"{PSI_HOME}/saved_inference") / self.timestamp
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        obs_file = save_dir / f"obs_initial_{self.inference_counter}.pkl"
-        actions_file = save_dir / f"actions_initial_{self.inference_counter}.pkl"
+        obs_file = obs_dir / f"obs_initial_{self.inference_counter}.pkl"
+        actions_file = act_dir / f"actions_initial_{self.inference_counter}.npy"
 
         with open(obs_file, 'wb') as f:
             pickle.dump(o, f)
 
-        with open(actions_file, 'wb') as f:
-            pickle.dump(normalized_actions, f)
-        ### END CLAUDE ###
+        # with open(actions_file, 'wb') as f:
+        #     pickle.dump(normalized_actions, f)
+        np.save(actions_file, normalized_actions)
 
         # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
         # o["imgs"][0][0].size
@@ -257,7 +265,7 @@ class RealTimeChunkController:
         ### CLAUDE ### Save images to PNG files for debugging/analysis
         for batch_idx, batch in enumerate(images):
             for img_idx, img in enumerate(batch):
-                img_file = save_dir / f"img_initial_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
+                img_file = img_dir / f"img_initial_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
                 img.save(img_file)
         ### END CLAUDE ### 
 
@@ -326,6 +334,11 @@ class Server:
         
         self.obs_lock = threading.Lock()
         self.action_lock = threading.Lock()
+        self.save_lock = threading.Lock()
+        self.inference_counter = 0
+
+        self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        color_print(f"[Server] self.timestamp: {self.timestamp}", style="green")
 
         self.controller = None
         self._control_loop_started = False
@@ -341,7 +354,7 @@ class Server:
         self.start_time_obs = time.time()
 
     def _init_controller(self, o_first):
-        controller = RealTimeChunkController(policy=self.model, o_first=o_first)
+        controller = RealTimeChunkController(policy=self.model, o_first=o_first, timestamp=self.timestamp)
         return controller
 
     def _postprocess_action(self, action):
@@ -569,6 +582,43 @@ class Server:
             # color_print("pred_action:", pred_action, style="yellow")
             pred_action[..., -5] = 0.75 # need to hardcode 0.75 for torso height here? ### ZERO OUT ###
             # color_print("pred_action:", pred_action, style="yellow")
+
+            with self.save_lock:
+                save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/deployment_time_inference")
+                obs_dir = save_dir / "observations"
+                act_dir = save_dir / "actions"
+                pred_act_dir = save_dir / "pred_actions"
+                img_dir = save_dir / "images"
+                obs_dir.mkdir(parents=True, exist_ok=True)
+                act_dir.mkdir(parents=True, exist_ok=True)
+                pred_act_dir.mkdir(parents=True, exist_ok=True)
+                img_dir.mkdir(parents=True, exist_ok=True)
+
+                obs_file = obs_dir / f"obs_{self.inference_counter}.pkl"
+                actions_file = act_dir / f"actions_{self.inference_counter}.npy"
+                pred_actions_file = pred_act_dir / f"pred_actions_{self.inference_counter}.npy"
+
+                with open(obs_file, 'wb') as f:
+                    pickle.dump(obs_next, f)
+
+                np.save(actions_file, action)
+                np.save(pred_actions_file, pred_action)
+
+
+
+                # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
+                # o["imgs"][0][0].size
+                images = obs_next["imgs"]
+
+                for batch_idx, batch in enumerate(images):
+                    for img_idx, img in enumerate(batch):
+                        img_file = img_dir / f"img_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
+                        img.save(img_file)
+
+                self.inference_counter += 1
+
+
+            
             
             # 3. Update latest_action
             with self.action_lock:

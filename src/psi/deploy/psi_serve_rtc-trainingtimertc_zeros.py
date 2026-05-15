@@ -151,8 +151,8 @@ class RealTimeChunkController:
 
                     o   = copy.deepcopy(self.o_cur)
                     
-                    # d   = max(self.Q)
-                    d   = min(max(self.Q), 7) ### DUMMY CLIENT ###
+                    d   = max(self.Q)
+                    # d   = min(max(self.Q), 7) ### DUMMY CLIENT ###
                     # A_prev = copy.deepcopy(torch.cat([self.A_cur[s:, :], torch.zeros((s, self.A_cur.shape[1]), device=self.A_cur.device, dtype=self.A_cur.dtype)], dim=0)) # (H, D)
                     A_prev = np.concatenate([copy.deepcopy(self.A_cur[s:, :]), np.zeros((s, self.A_cur.shape[1]), dtype=self.A_cur.dtype)], axis=0) # (H, D)
 
@@ -187,8 +187,8 @@ class RealTimeChunkController:
                     states=torch.from_numpy(np.zeros_like(o['obs'])).to(self.device), ### ZERO OUT ###
                     traj2ds=None,
                     instructions=o['text_instructions'],
-                    # num_inference_steps = 8,
-                    num_inference_steps = 4, ### DUMMY CLIENT ###
+                    num_inference_steps = 8,
+                    # num_inference_steps = 4, ### DUMMY CLIENT ###
                     prev_actions=torch.from_numpy(A_prev[np.newaxis, :, :]).to(self.device), # (H, D) -> (1, H, D)
                     inference_delay=d,
                     max_delay=8

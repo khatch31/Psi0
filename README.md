@@ -511,8 +511,8 @@ Download pre-trained `psi-0` VLM backbone
 ```
 python scripts/data/download.py \
   --repo-id=USC-PSI-Lab/psi-model \
-  --remote-dir=pre.fast.egodex.2512241941/pretrained/ckpt_200000 \
-  --local-dir=$PWD/cache/checkpoints/psi0/pre.fast.egodex.2512241941.ckpt200k \
+  --remote-dir=psi0/pre.fast.1by1.2601091803.ckpt.ego200k.he30k \
+  --local-dir=$PSI_HOME/cache/checkpoints/psi0/pre.fast.1by1.2601091803.ckpt.ego200k.he30k \
   --repo-type=model
 ```
 
@@ -547,10 +547,13 @@ and more variants for ablation studies:
 
 Download the selected models
 
+> Edit `.env` to use `HF_ENDPOINT=https://hf-mirror.com` if needed.
+
 ```
-hf download USC-PSI-Lab/psi-model \
-  --remote-dir=<remote dictory on huggingface repo>
-  --local-dir=$PSI_HOME/cache/checkpoints \
+python scripts/data/download.py \
+  --repo-id=USC-PSI-Lab/psi-model \
+  --remote-dir=<Remote Directory> \
+  --local-dir=$PSI_HOME/cache/checkpoints/<Remote Directory> \
   --repo-type=model
 ```
 
@@ -605,14 +608,11 @@ GIT_LFS_SKIP_SMUDGE=1 uv ...
 ## Citation
 
 ```
-@misc{wei2026psi0,
-  title={$\Psi_0$: An Open Foundation Model Towards Universal Humanoid Loco-Manipulation}, 
-  author={Songlin Wei and Hongyi Jing and Boqian Li and Zhenyu Zhao and Jiageng Mao and Zhenhao Ni and Sicheng He and Jie Liu and Xiawei Liu and Kaidi Kang and Sheng Zang and Weiduo Yuan and Marco Pavone and Di Huang and Yue Wang},
-  year={2026},
-  eprint={2603.12263},
-  archivePrefix={arXiv},
-  primaryClass={cs.RO},
-  url={https://arxiv.org/abs/2603.12263}, 
+@article{wei2026psi0,
+  title={{$\Psi_0$}: An Open Foundation Model Towards Universal Humanoid Loco-Manipulation},
+  author={Wei, Songlin and Jing, Hongyi and Li, Boqian and Zhao, Zhenyu and Mao, Jiageng and Ni, Zhenhao and He, Sicheng and Liu, Jie and Liu, Xiawei and Kang, Kaidi and others},
+  journal={arXiv preprint arXiv:2603.12263},
+  year={2026}
 }
 ```
 

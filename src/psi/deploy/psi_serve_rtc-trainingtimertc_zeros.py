@@ -51,6 +51,10 @@ DELAY_BUFFER_SIZE = 6        # == delay_buffer_size
 D_INIT = 6                   # == d_init # TODO: placeholder, needs calculation
 CTRL_PERIOD_SEC = 1. / 30       # 30Hz
 
+PSI_HOME = os.environ("PSI_HOME")
+
+color_print("PSI_HOME:", PSI_HOME, style="cyan")
+
 import sys
 from IPython.core.debugger import Pdb
 class ForkedIPdb(Pdb):
@@ -190,7 +194,7 @@ class RealTimeChunkController:
 
         ### CLAUDE ### Save observations and actions to disk for debugging/analysis
         import pickle
-        save_dir = Path("/home/songlin/Projects/psi0_kyle/psi0_workspace/saved_inference") / self.timestamp
+        save_dir = Path(f"{PSI_HOME}/saved_inference") / self.timestamp
         save_dir.mkdir(parents=True, exist_ok=True)
 
         obs_file = save_dir / f"obs_{s}_{self.inference_counter}.pkl"
@@ -233,7 +237,7 @@ class RealTimeChunkController:
 
         ### CLAUDE ### Save initial observations and actions to disk for debugging/analysis
         import pickle
-        save_dir = Path("/home/songlin/Projects/psi0_kyle/psi0_workspace/saved_inference") / self.timestamp
+        save_dir = Path(f"{PSI_HOME}/saved_inference") / self.timestamp
         save_dir.mkdir(parents=True, exist_ok=True)
 
         obs_file = save_dir / f"obs_initial_{self.inference_counter}.pkl"

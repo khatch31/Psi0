@@ -7,8 +7,10 @@ WebSocket at ~30Hz. Received actions are printed.
 Usage:
 
 
+source .env
+source .venv-psi/bin/activate
 python3 -u scripts/deploy/dummy_client_psi0-rtc.py \
---run-dir /home/ubuntu/Desktop/world_models_project/psi0_workspace/training_output/finetune/open_a_drawer_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2605062254 \
+--run-dir /home/songlin/Projects/psi0_kyle/psi0_workspace/training_output/finetune/open_a_drawer_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2605062254 \
 --host localhost --port 8014
 
 
@@ -31,7 +33,8 @@ DEFAULT_RUN_DIR = (
     "/home/ubuntu/Desktop/world_models_project/psi0_workspace/training_output/"
     "finetune/open_a_drawer_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2605062254"
 )
-DEFAULT_PSI_HOME = "/home/ubuntu/Desktop/world_models_project/psi0_workspace"
+# DEFAULT_PSI_HOME = "/home/ubuntu/Desktop/world_models_project/psi0_workspace"
+DEFAULT_PSI_HOME = "/home/songlin/Projects/Psi0_kyle"
 OBS_SEND_HZ = 30
 OBS_SEND_INTERVAL = 1.0 / OBS_SEND_HZ
 

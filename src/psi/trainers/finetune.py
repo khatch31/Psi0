@@ -394,7 +394,7 @@ class FinetuneTrainer(Trainer):
         # obs = repacked_batch["states"]  # (B,1,M)
         obs = repacked_batch["states"]  # (B,1,M)
         assert self.model_cfg.zero_states
-        if self.model_cfg.zero_states:
+        if self.model_cfg.zero_states: ### NOTE: kind of dumb that claude put this here and put the zero_last_8_actions in the evaluate function
             obs = torch.zeros_like(obs)
             # color_print("obs.sum():", obs.sum(), style="green")
         ### END CLAUDE ###
@@ -468,7 +468,7 @@ class FinetuneTrainer(Trainer):
             # gt_actions = self.data_cfg.data_transforms.normalize_action(repacked_batch[1])
             ### CLAUDE ### Zero last 8 dims of gt for L1 eval when --model.zero-last-8-actions is set,
             ###            so we measure pred against the zeroed target the model was trained on.
-            assert self.model_cfg.zero_last_8_actions
+            # assert self.model_cfg.zero_last_8_actions
             if self.model_cfg.zero_last_8_actions:
                 gt_actions = gt_actions.clone()
                 # color_print(f"gt_actions[..., -8:].sum(): {gt_actions[..., -8:].sum()}", style="green")
@@ -545,14 +545,15 @@ class FinetuneTrainer(Trainer):
         }
 
     def forward_and_loss(self, model, batch) -> dict[str, torch.Tensor]:
-        bsz, Tp, Da = batch["actions"].shape
+        bsz, Tp, Da = batch["actions"].shape ### NOTE: for other changes to the batch, nmove to after zeroing out the actions?
 
         ### CLAUDE ### Zero out the last 8 action dims (rpy/height/torso vx,vy,vyaw/target_yaw)
         ###            when --model.zero-last-8-actions is set, so the model is trained to predict
         ###            zero for those dims. We mutate a clone (not batch["actions"]) to avoid
         ###            polluting the batch for downstream consumers (e.g. evaluate() reads
         ###            val_batch["actions"] directly for L1 metrics).
-        assert self.model_cfg.zero_last_8_actions
+        # ForkedIPdb().set_trace()
+        # assert self.model_cfg.zero_last_8_actions
         if self.model_cfg.zero_last_8_actions:
             zeroed_actions = batch["actions"].clone()
             # color_print(f"zeroed_actions[..., -8:].sum(): {zeroed_actions[..., -8:].sum()}", style="green")
@@ -609,6 +610,8 @@ class FinetuneTrainer(Trainer):
         # states_in = batch["states"]
         assert self.model_cfg.zero_states
         states_in = torch.zeros_like(batch["states"]) if self.model_cfg.zero_states else batch["states"]
+
+
         # color_print(f"states_in.sum(): {states_in.sum()}", style="green")
         ### END CLAUDE ###
         model_output = model(
@@ -642,3 +645,18 @@ class FinetuneTrainer(Trainer):
         loss_action = (loss_action * mask).sum(1)  # (B, Da)
         loss_action = (loss_action.mean(0) * self.loss_w).sum()
         return {"loss": loss_action}
+
+
+
+import sys
+from IPython.core.debugger import Pdb
+class ForkedIPdb(Pdb):
+    """An ipdb subclass that can be used from a forked multiprocessing child."""
+
+    def interaction(self, *args, **kwargs):
+        _stdin = sys.stdin
+        try:
+            sys.stdin = open('/dev/stdin')
+            super().interaction(*args, **kwargs)
+        finally:
+            sys.stdin = _stdin

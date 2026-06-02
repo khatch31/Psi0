@@ -58,6 +58,10 @@ def parse_args():
     p.add_argument("--num-inference-steps", type=int, default=10)
     p.add_argument("--output-dir", type=str, default=".",
                    help="Directory to save the output plot")
+    
+    p.add_argument("--zero_states", action="store_true", default=False)
+
+    
     return p.parse_args()
 
 
@@ -127,6 +131,10 @@ def main():
         batch_instructions = [frame["instruction"]]
         batch_states       = torch.from_numpy(frame["states"]).unsqueeze(0).to(device)
 
+        if args.zero_states:
+            batch_states = torch.zeros_like(batch_states)
+            print(f"[{i}] batch_states.sum(): {batch_states.sum()}")
+
         with torch.no_grad():
             pred_actions = psi0.predict_action(
                 observations=batch_images,
@@ -191,3 +199,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
+
+bash examples/simple/run_open_loop_eval.sh
+
+"""

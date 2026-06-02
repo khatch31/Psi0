@@ -24,3 +24,9 @@ uv run --active --group psi --group serve serve_psi0 \
     --ckpt-step=$CKPT_STEP \
     --action-exec-horizon=24 \
     --rtc
+
+    # --port 22085 \
+
+# bash scripts/deploy/serve_psi0_simple.sh \
+# "$PSI_HOME/training_output/finetune/G1WholebodyTabletopGraspMP-v0.simple.flow1000.cosine.lr1.0e-04.b128.gpus8.2605262113" \
+# 40000

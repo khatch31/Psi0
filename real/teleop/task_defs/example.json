@@ -5,12 +5,6 @@
         "category": "Locomotion",
         "objects": "air pump, desk",
         "description": "Walk to the desk, locate the air pump, and operate it by pressing or squeezing."
-      },
-      {
-        "title": "Walk towards the cabinet and close the cabinet door",
-        "category": "Locomotion",
-        "objects": "cabinet door, cabinet",
-        "description": "Walk to the cabinet and close the cabinet door by pushing it shut."
       }
     ]
   }

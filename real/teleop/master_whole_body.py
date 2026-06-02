@@ -677,15 +677,13 @@ class RobotTaskmaster:
                 left_pose, right_pose, head_rmat, current_h, current_rpy
             )
 
+            new_h = 0.75
+            new_rpy = np.array([0, 0, 0])
+
 
             self.torso_height = new_h
             self.torso_roll = new_rpy[0]
             self.torso_pitch = new_rpy[1]
-
-            # yaw_diff = new_rpy[2] - current_rpy[2]
-            # yaw_diff = np.remainder(yaw_diff + np.pi, 2 * np.pi) - np.pi
-            # new_rpy[2] = current_rpy[2] + yaw_diff 
-
             self.torso_yaw = new_rpy[2]
 
 

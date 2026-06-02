@@ -12,3 +12,5 @@ cd "$(dirname "$0")/../teleop"
 python ../deploy/psi-inference_rtc.py \
     --port "$PORT" \
     --task "$TASK"
+
+# bash ./real/scripts/deploy_psi0-rtc.sh

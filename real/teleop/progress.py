@@ -17,8 +17,18 @@ class ProgressTracker:
             
     def scan_directory(self):
         # Get all categories (top-level directories)
+        print("="*20)
+        print(self.base_dir)
+        print(os.getcwd())
+        # exit(0)
+        print([d for d in os.listdir(self.base_dir)])
+        print([d for d in os.listdir(self.base_dir) 
+                    if os.path.isdir(os.path.join(self.base_dir, d)) and not d.startswith('.')])
+        print("="*20)
+
         categories = [d for d in os.listdir(self.base_dir) 
                     if os.path.isdir(os.path.join(self.base_dir, d)) and not d.startswith('.')]
+                    
         
         self._log(f"Found categories: {categories}")
         

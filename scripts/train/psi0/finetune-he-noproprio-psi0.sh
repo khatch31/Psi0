@@ -98,4 +98,5 @@ torchrun --nproc_per_node=$NPROC_PER_NODE --master_port=$master_port scripts/tra
 
 # scripts/train/psi0/finetune-he-noproprio-psi0.sh adjust_the_angle_of_a_phone_stand
 # scripts/train/psi0/finetune-he-noproprio-psi0.sh open_a_drawer_g1 open_a_drawer_g1 29501
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh open_a_drawer_g1_2 open_a_drawer_g1_2 29500
 

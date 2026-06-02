@@ -257,5 +257,6 @@
   "use_a_soft_sponge_to_wipe_off_a_dry_surface": "A soft sponge is kept on the balc marked spot on the table infront of the robot and it uses its right hand fist to press down on it and drrags it across the table in a back and forth manner twice to clean it",
   "use_a_whiteboard_eraser_to_erase_the_mark_on_the_desk": "A whiteboard eraser is kept on the black marked spot on the table infront of the robot and the robot uses its right hand to swipe it back and forth on the table twice to clean it",
   "pick_the_hammer_and_hit_desk": "The robot picks the hammer with right hand and hits the black area on the desk and places it back.",
-  "use_eraser_to_wipe_desk_g1": "Use the left hand to press on the green eraser and wipe the desk from center to the left and then back to center."
+  "use_eraser_to_wipe_desk_g1": "Use the left hand to press on the green eraser and wipe the desk from center to the left and then back to center.",
+  "open_a_drawer_g1_2": "the robot uses its right hand to grab the drawer kept on the middle of the desk and pull it out towards the robot."
 }

@@ -76,6 +76,8 @@ def main():
     args = parse_args()
     run_dir = args.run_dir
 
+    print("Loading config...")
+
     launch_config = load_config(run_dir)
     seed_everything(launch_config.seed or 42)
 
@@ -84,6 +86,7 @@ def main():
     # ------------------------------------------------------------------
     from psi.models.psi0 import Psi0Model
 
+    print(f"Loading model...")
     device = f"cuda:{args.gpu}"
     psi0 = Psi0Model.from_pretrained(run_dir, CKPT_STEP, launch_config, device=device)
     psi0.to(device)

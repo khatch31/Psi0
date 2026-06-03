@@ -398,7 +398,16 @@ def main(server_url):
         stabilize_thread.start()
         master.episode_kill_event.set()
         print("[MAIN] Initialize with standing pose...")
-        time.sleep(30)
+        # time.sleep(30)
+        time.sleep(1)
+        inpt = input("Enter any key to continue > ")
+        print("Starting in 3 seconds...")
+        time.sleep(3)
+        print("Starting")
+
+
+
+
         master.episode_kill_event.clear() 
 
         master.reset_yaw_offset = True

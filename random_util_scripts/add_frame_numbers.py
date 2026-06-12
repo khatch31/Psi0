@@ -2,6 +2,10 @@
 """Add frame numbers to the top-left corner of each frame in an mp4 video."""
 
 import argparse
+### CLAUDE ### Add pathlib and glob imports for directory mode
+import glob
+from pathlib import Path
+### END CLAUDE ###
 import cv2
 
 
@@ -46,11 +50,29 @@ def add_frame_numbers(input_path: str, output_path: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Overlay frame numbers on an mp4 video.")
-    parser.add_argument("input", help="Path to input mp4 file")
-    parser.add_argument("output", help="Path to output mp4 file")
+    parser.add_argument("input", help="Path to input mp4 file or a directory of mp4 files")
+    ### CLAUDE ### Make output optional; not needed when input is a directory
+    # parser.add_argument("output", help="Path to output mp4 file")
+    parser.add_argument("output", nargs="?", help="Path to output mp4 file (single-file mode only)")
+    parser.add_argument("--suffix", default="_timesteps", help="Suffix appended to filenames in directory mode (default: _timesteps)")
+    ### END CLAUDE ###
     args = parser.parse_args()
 
-    add_frame_numbers(args.input, args.output)
+    ### CLAUDE ### Branch on directory vs single-file input
+    input_path = Path(args.input)
+    if input_path.is_dir():
+        mp4_files = sorted(glob.glob(str(input_path / "*.mp4")))
+        if not mp4_files:
+            print(f"No .mp4 files found in {input_path}")
+        for mp4 in mp4_files:
+            p = Path(mp4)
+            out = str(p.parent / (p.stem + args.suffix + p.suffix))
+            add_frame_numbers(mp4, out)
+    else:
+        if args.output is None:
+            parser.error("output is required when input is a file")
+        add_frame_numbers(args.input, args.output)
+    ### END CLAUDE ###
 
 
 """

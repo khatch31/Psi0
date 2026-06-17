@@ -81,5 +81,9 @@ python3 -u random_util_scripts/add_frame_numbers.py \
 ../saved_inference/2026-05-15_15-57-17/deployment_video_30hz.mp4 \
 ../saved_inference/2026-05-15_15-57-17/deployment_video_30hz_timesteps.mp4
 
+python3 -u random_util_scripts/add_frame_numbers.py \
+../saved_inference/deployment_videos
+../saved_inference/deployment_videos
+
 
 """

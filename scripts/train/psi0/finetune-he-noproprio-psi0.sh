@@ -35,13 +35,13 @@ finetune_real_psi0_config \
 --train.data_parallel=ddp \
 --train.mixed_precision=bf16 \
 --train.train_batch_size=16 \
---train.max_checkpoints_to_keep=5 \
+--train.max_checkpoints_to_keep=1_000 \
 --train.gradient_accumulation_steps=1 \
 --train.learning_rate=1e-4 \
 --train.max_training_steps=40000 \
 --train.warmup_ratio=None \
 --train.warmup_steps=1000 \
---train.checkpointing_steps=5000 \
+--train.checkpointing_steps=2_500 \
 --train.validation_steps=1000 \
 --train.val_num_batches=20 \
 --train.max_grad_norm=1.0 \
@@ -96,7 +96,15 @@ finetune_real_psi0_config \
 torchrun --nproc_per_node=$NPROC_PER_NODE --master_port=$master_port scripts/train.py \
     ${args}
 
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh adjust_the_angle_of_a_phone_stand
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh open_a_drawer_g1 open_a_drawer_g1 29501
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh open_a_drawer_g1_2 open_a_drawer_g1_2 29500
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh place_a_cube_in_a_bag place_a_cube_in_a_bag
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh put_dumpling_into_plate_g1 put_dumpling_into_plate_g1 29501
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh stack_two_boxes stack_two_boxes 29502
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh stack_two_cubes_g1 stack_two_cubes_g1 29503
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh open_a_drawer_g1 open_a_drawer_g1_second 29504
 
+
+
+# task=place_a_cube_in_a_bag
+# task=put_dumpling_into_plate_g1
+# task=stack_two_boxes
+# task=stack_two_cubes_g1

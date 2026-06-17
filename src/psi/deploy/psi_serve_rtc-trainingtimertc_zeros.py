@@ -105,7 +105,12 @@ class RealTimeChunkController:
         self.A_cur = A_first # (H, D)
         self.o_cur: Dict[str, Any] | None = None 
 
-        self.Q = deque([d_init], maxlen=delay_buf_size)  
+        self.Q = deque([d_init], maxlen=delay_buf_size)
+
+        ### CLAUDE ### Store d_init and delay_buf_size for use in reset()
+        self.d_init = d_init
+        self.delay_buf_size = delay_buf_size
+        ### END CLAUDE ###
 
         self.M = threading.Lock()
         self.C = threading.Condition(self.M)
@@ -273,6 +278,27 @@ class RealTimeChunkController:
         self.inference_counter += 1
 
         return normalized_actions
+
+    ### CLAUDE ### Reset controller: clear history and get fresh action prediction using _predict_action (no history)
+    def reset(self, o_new: Dict[str, Any]):
+        """
+        Reset controller state. Runs _predict_action (no RTC history) on the provided observation
+        to produce a fresh A_cur, then resets t, o_cur, and Q so the inference loop starts clean.
+        Safe to call from any thread.
+        """
+        color_print("[RealTimeChunkController] Reset: running fresh prediction...", style="cyan")
+        # Run inference outside the lock — _predict_action is slow
+        A_fresh = self._predict_action(o_new)
+
+        with self.C:
+            self.A_cur = A_fresh
+            self.t = 0
+            self.o_cur = None
+            self.Q = deque([self.d_init], maxlen=self.delay_buf_size)
+            self.C.notify_all()
+
+        color_print("[RealTimeChunkController] Reset complete", style="cyan")
+    ### END CLAUDE ###
 
 
 class Server:
@@ -584,38 +610,39 @@ class Server:
             # color_print("pred_action:", pred_action, style="yellow")
 
             with self.save_lock:
-                save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/deployment_time_inference")
-                obs_dir = save_dir / "observations"
-                act_dir = save_dir / "actions"
-                pred_act_dir = save_dir / "pred_actions"
-                img_dir = save_dir / "images"
-                obs_dir.mkdir(parents=True, exist_ok=True)
-                act_dir.mkdir(parents=True, exist_ok=True)
-                pred_act_dir.mkdir(parents=True, exist_ok=True)
-                img_dir.mkdir(parents=True, exist_ok=True)
+                if obs_next is not None:
+                    save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/deployment_time_inference")
+                    obs_dir = save_dir / "observations"
+                    act_dir = save_dir / "actions"
+                    pred_act_dir = save_dir / "pred_actions"
+                    img_dir = save_dir / "images"
+                    obs_dir.mkdir(parents=True, exist_ok=True)
+                    act_dir.mkdir(parents=True, exist_ok=True)
+                    pred_act_dir.mkdir(parents=True, exist_ok=True)
+                    img_dir.mkdir(parents=True, exist_ok=True)
 
-                obs_file = obs_dir / f"obs_{self.inference_counter}.pkl"
-                actions_file = act_dir / f"actions_{self.inference_counter}.npy"
-                pred_actions_file = pred_act_dir / f"pred_actions_{self.inference_counter}.npy"
+                    obs_file = obs_dir / f"obs_{self.inference_counter}.pkl"
+                    actions_file = act_dir / f"actions_{self.inference_counter}.npy"
+                    pred_actions_file = pred_act_dir / f"pred_actions_{self.inference_counter}.npy"
 
-                with open(obs_file, 'wb') as f:
-                    pickle.dump(obs_next, f)
+                    with open(obs_file, 'wb') as f:
+                        pickle.dump(obs_next, f)
 
-                np.save(actions_file, action)
-                np.save(pred_actions_file, pred_action)
+                    np.save(actions_file, action)
+                    np.save(pred_actions_file, pred_action)
 
 
 
-                # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
-                # o["imgs"][0][0].size
-                images = obs_next["imgs"]
+                    # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
+                    # o["imgs"][0][0].size
+                    images = obs_next["imgs"]
 
-                for batch_idx, batch in enumerate(images):
-                    for img_idx, img in enumerate(batch):
-                        img_file = img_dir / f"img_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
-                        img.save(img_file)
+                    for batch_idx, batch in enumerate(images):
+                        for img_idx, img in enumerate(batch):
+                            img_file = img_dir / f"img_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
+                            img.save(img_file)
 
-                self.inference_counter += 1
+                    self.inference_counter += 1
 
 
             
@@ -661,6 +688,27 @@ class Server:
         @self.app.get("/health")
         async def health_check():
             return {"status": "ok"}
+
+        ### CLAUDE ### POST /reset: clear history and latest obs, re-run fresh prediction from latest obs
+        @self.app.post("/reset")
+        async def reset_controller():
+            with self.obs_lock:
+                o_latest = copy.deepcopy(self.latest_obs)
+
+            if self.controller is None:
+                return {"status": "error", "message": "Controller not yet initialized — send at least one obs first"}
+            if o_latest is None:
+                return {"status": "error", "message": "No observation available to seed reset"}
+
+            # Run blocking inference in a thread pool so we don't block the event loop
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.controller.reset, o_latest)
+
+            # NOTE: do NOT clear latest_obs here — the control loop calls step(latest_obs)
+            # every tick and would pass None into the controller, crashing the inference loop
+
+            return {"status": "ok"}
+        ### END CLAUDE ###
 
     def run(self, host: str = "0.0.0.0", port: int = 8000) -> None:
         print(f"Server listens on {host}:{port}")

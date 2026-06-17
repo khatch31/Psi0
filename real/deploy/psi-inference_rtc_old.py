@@ -1,5 +1,4 @@
 import os
-import signal
 import time
 import threading
 import json
@@ -419,40 +418,10 @@ def main(server_url):
         t_ws = threading.Thread(target=websocket_thread, daemon=True)
         t_ws.start()
 
-        print("[MAIN] Running. Ctrl+C once to reset server, twice to stop.")
-
-        ### CLAUDE ### Use signal handler instead of input() — input() gets buried under thread output.
-        # First Ctrl+C sets _reset_flag → main loop sends reset and continues.
-        # Second Ctrl+C sets kill_event → loop exits → normal cleanup runs.
-        reset_url = server_url.replace("ws://", "http://").replace("/ws", "/reset")
-        _reset_flag = threading.Event()
-
-        def _sigint_handler(sig, frame):
-            if _reset_flag.is_set():
-                # Second Ctrl+C while reset is pending → exit
-                running.clear()
-                kill_event.set()
-            else:
-                _reset_flag.set()
-
-        signal.signal(signal.SIGINT, _sigint_handler)
-
-        # while not kill_event.is_set() and running.is_set():
-        #     time.sleep(0.5)
+        print("[MAIN] Running. Ctrl+C to stop.")
+        
         while not kill_event.is_set() and running.is_set():
-            time.sleep(0.1)
-            if _reset_flag.is_set():
-                _reset_flag.clear()
-                print(f"\n[MAIN] Ctrl+C detected — sending reset to {reset_url} ...")
-                try:
-                    resp = requests.post(reset_url, timeout=30)
-                    print(f"[MAIN] Reset response: {resp.json()}")
-                except Exception as e:
-                    print(f"[MAIN] Reset request failed: {e}")
-                print("[MAIN] Continuing. Ctrl+C again to stop.")
-
-        signal.signal(signal.SIGINT, signal.SIG_DFL)  # restore default before cleanup
-        ### END CLAUDE ###
+            time.sleep(0.5)
 
         print("[MAIN] kill_event set, preparing to stop...")
         running.clear()

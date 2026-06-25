@@ -7,6 +7,7 @@ import glob
 from pathlib import Path
 ### END CLAUDE ###
 import cv2
+import os
 
 
 def add_frame_numbers(input_path: str, output_path: str) -> None:
@@ -62,12 +63,16 @@ if __name__ == "__main__":
     input_path = Path(args.input)
     if input_path.is_dir():
         mp4_files = sorted(glob.glob(str(input_path / "*.mp4")))
+        mp4_files = [mp4_file for mp4_file in mp4_files if "timestep" not in mp4_file]
         if not mp4_files:
             print(f"No .mp4 files found in {input_path}")
         for mp4 in mp4_files:
             p = Path(mp4)
             out = str(p.parent / (p.stem + args.suffix + p.suffix))
-            add_frame_numbers(mp4, out)
+            if os.path.isfile(out):
+                print(f"Skipping {out} already exists")
+            else:
+                add_frame_numbers(mp4, out)
     else:
         if args.output is None:
             parser.error("output is required when input is a file")
@@ -78,12 +83,10 @@ if __name__ == "__main__":
 """
 
 python3 -u random_util_scripts/add_frame_numbers.py \
-../saved_inference/2026-05-15_15-57-17/deployment_video_30hz.mp4 \
-../saved_inference/2026-05-15_15-57-17/deployment_video_30hz_timesteps.mp4
+../saved_inference/2026-06-19/deployment_videos
 
-python3 -u random_util_scripts/add_frame_numbers.py \
-../saved_inference/deployment_videos
-../saved_inference/deployment_videos
 
+python3 -u add_frame_numbers.py \
+../../saved_inference/2026-06-19/deployment_videos
 
 """

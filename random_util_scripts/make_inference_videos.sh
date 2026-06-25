@@ -89,7 +89,7 @@ set -e
 # fi
 
 ### CLAUDE ### Loop over all session folders; save videos to central deployment_videos/ and policy_videos/ dirs; skip per-video if mp4 already exists
-INFER_ROOT=~/Desktop/world_models_project/psi0_workspace/saved_inference
+INFER_ROOT=~/Desktop/world_models_project/psi0_workspace/saved_inference/2026-06-19
 DEPLOY_OUT="$INFER_ROOT/deployment_videos"
 POLICY_OUT="$INFER_ROOT/policy_videos"
 mkdir -p "$DEPLOY_OUT" "$POLICY_OUT"

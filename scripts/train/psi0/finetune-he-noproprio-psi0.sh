@@ -101,10 +101,8 @@ torchrun --nproc_per_node=$NPROC_PER_NODE --master_port=$master_port scripts/tra
 # scripts/train/psi0/finetune-he-noproprio-psi0.sh stack_two_boxes stack_two_boxes 29502
 # scripts/train/psi0/finetune-he-noproprio-psi0.sh stack_two_cubes_g1 stack_two_cubes_g1 29503
 # scripts/train/psi0/finetune-he-noproprio-psi0.sh open_a_drawer_g1 open_a_drawer_g1_second 29504
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh push_duck_g1 push_duck_g1 
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh erase_a_table_g1 erase_a_table_g1 29501
 
 
 
-# task=place_a_cube_in_a_bag
-# task=put_dumpling_into_plate_g1
-# task=stack_two_boxes
-# task=stack_two_cubes_g1

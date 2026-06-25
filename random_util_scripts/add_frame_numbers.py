@@ -62,6 +62,7 @@ if __name__ == "__main__":
     input_path = Path(args.input)
     if input_path.is_dir():
         mp4_files = sorted(glob.glob(str(input_path / "*.mp4")))
+        mp4_files = [mp4_file for mp4_file in mp4_files if "timestep" not in mp4_file]
         if not mp4_files:
             print(f"No .mp4 files found in {input_path}")
         for mp4 in mp4_files:
@@ -81,11 +82,12 @@ if __name__ == "__main__":
 """
 
 python3 -u random_util_scripts/add_frame_numbers.py \
-../saved_inference/2026-05-15_15-57-17/deployment_video_30hz.mp4 \
-../saved_inference/2026-05-15_15-57-17/deployment_video_30hz_timesteps.mp4
+../saved_inference/2026-06-19/deployment_videos
 
 python3 -u random_util_scripts/add_frame_numbers.py \
 ../saved_inference/deployment_videos
 
+python3 -u add_frame_numbers.py \
+../../saved_inference/2026-06-19/deployment_videos
 
 """

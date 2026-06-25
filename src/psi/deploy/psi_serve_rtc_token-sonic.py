@@ -38,39 +38,40 @@ from psi.utils import parse_args_to_tyro_config, pad_to_len, seed_everything
 from psi.utils.overwatch import initialize_overwatch 
 overwatch = initialize_overwatch(__name__)
 
-
-
 PREDICT_HORIZON = 30          # == H
 MIN_EXEC_HORIZON = 15         # == s_min # TODO: should match D_INIT, ideally s_min >= d_real
-DELAY_BUFFER_SIZE = 6        # == delay_buffer_size
-D_INIT = 6                   # == d_init # TODO: placeholder, needs calculation
+DELAY_BUFFER_SIZE = 6         # == delay_buffer_size
+D_INIT = 6                    # == d_init # TODO: placeholder, needs calculation
 CTRL_PERIOD_SEC = 1. / 30       # 30Hz
 
-
-
 class RealTimeChunkController:
-    def __init__(self,
-                 policy: Psi0Model,
-                 prediction_horizon: int = PREDICT_HORIZON,
-                 min_exec_horizon: int = MIN_EXEC_HORIZON,
-                 delay_buf_size: int = DELAY_BUFFER_SIZE,
-                 d_init: int = D_INIT,
-                 o_first: np.ndarray | None = None): # type: ignore
 
-        self.policy : Psi0Model = policy
+    def __init__(
+        self,
+        policy: Psi0Model,
+        o_first: np.ndarray,
+        prediction_horizon: int = PREDICT_HORIZON,
+        min_exec_horizon: int = MIN_EXEC_HORIZON,
+        delay_buf_size: int = DELAY_BUFFER_SIZE,
+        d_init: int = D_INIT,
+    ):
+
+        self.policy = policy
         self.device = self.policy.device
-        self.H     = prediction_horizon
-
+        self.H = prediction_horizon
         self.s_min = min_exec_horizon
-
-        self.t: int = 0
-        assert o_first != None, "please provide o_first"
+        self.t = 0
 
         A_first = self._predict_action(o_first) # (H, D)
 
         # warmup the model
         for i in range (2):
-            _ = self._predict_action_rtc(copy.deepcopy(o_first), np.concatenate([copy.deepcopy(A_first[self.s_min:, :]), np.zeros((self.s_min, A_first.shape[1]), dtype=A_first.dtype)], axis=0), d_init)
+            _ = self._predict_action_rtc(
+                copy.deepcopy(o_first), 
+                np.concatenate([copy.deepcopy(A_first[self.s_min:, :]), np.zeros((self.s_min, A_first.shape[1]), dtype=A_first.dtype)], axis=0), 
+                d_init
+            )
+
         print("Model warmed up")
 
         self.A_cur = A_first # (H, D)
@@ -83,10 +84,6 @@ class RealTimeChunkController:
 
         self._infer_th = threading.Thread(target=self._inference_loop, daemon=True)
         self._infer_th.start()
-
-    # def replace_prev_actions_to_obs(self, o, previous_rpy, previous_height):
-    #     o['obs'] = np.concatenate([o['obs'][:, :, :28], previous_rpy[np.newaxis, np.newaxis, :], previous_height[np.newaxis, np.newaxis, :], o['obs'][:, :, 32:]], axis=-1) # (1, 1, 28) -> (1, 1, 32)
-    #     return o
 
         
     def step(self, obs_next: Dict[str, Any]): # consume a_(t-1) and provide o_t
@@ -117,7 +114,6 @@ class RealTimeChunkController:
 
                     assert (s-2) >= 0
                     # self.o_cur = self.replace_prev_actions_to_obs(self.o_cur, copy.deepcopy(self.A_cur[s-2, 28:31]), copy.deepcopy(self.A_cur[s-2, 31:32]))
-                    
                     #
 
                     o   = copy.deepcopy(self.o_cur)
@@ -249,28 +245,16 @@ class Server:
         # return self.launch_cfg.data.data_transforms.denormalize_action(action)
         return self.maxmin.denormalize(action) # denormalization is done in the pipeline
 
-
-
     def preprocess_image(self, image_dict: Dict[str, Any]) -> Dict[str, Any]:
         imgs = {}
-        # # FIXME 
-        # image_key_to_cam_idx = {'front_stereo_left': 0, 'front_stereo_right': 1, 'left_future_traj_2d': 4, 'right_future_traj_2d': 5, 'side': 3, 'side_future_traj_2d': 7, 'wrist': 2, 'wrist_future_traj_2d': 6}
-        # for img_key in self.launch_config.data.transform.repack.image_keys:
-        #     cam_idx = image_key_to_cam_idx[img_key] #self.launch_config.data.transform.repack.image_key_to_cam_idx[img_key]
-        #     imgs[f"cam{cam_idx}"] = self._process_img(image_dict[f"{img_key}".replace("image_", "")])#[None, ...]
-
         for k in image_dict.keys():
             imgs[k] = self._process_img(image_dict[k])
-
-
         return imgs
 
     def _process_img(self, img):
         from torchvision.transforms import v2
-
         transforms = [self.model_transform.resize(), self.model_transform.center_crop()]
         t = v2.Compose(transforms)
-
         return [t(img)]
 
     def _parse_obs_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -278,8 +262,10 @@ class Server:
         request = RequestMessage.deserialize(payload)
         image_dict, instruction, history_dict, state_dict, gt_action, dataset_name = \
                     request.image, request.instruction, request.history, request.state, request.gt_action, request.dataset_name
-        condition_dict = request.condition
+        
+        # condition_dict = request.condition
         overwatch.info(f"Instruction: {instruction}")
+        print("image dict keys:", image_dict.keys())
             
         # parts = instruction.split(".")
         # if len(parts) > 1 and parts[-1].isdigit():
@@ -290,31 +276,30 @@ class Server:
         instruction = instruction.lower()
         # img_id = -1
 
-
         # TODO support image history
         # img dict: {"video": np.array(...).shape(480, 640, 3)}
         imgs = {}
-        for cam_idx, img in enumerate(image_dict.values()):
-            imgs[f"cam{cam_idx}"] = Image.fromarray(np.clip(img, 0, 255).astype(np.uint8))
-
-        obs = state_dict['states'].copy() # shape(33,)
+        print("image keys:", self.launch_cfg.data.transform.repack.image_keys)
+        for cam_idx, img_key in enumerate(self.launch_cfg.data.transform.repack.image_keys):
+            imgs[f"cam{cam_idx}"] = Image.fromarray(np.clip(image_dict[img_key], 0, 255).astype(np.uint8))
+        
+        states = np.asarray(state_dict["states"]).copy() # client sends (N, Ds)
+        if states.ndim == 2:        # state history stacked by client -> take latest frame (obs_horizon=1)
+            states = states[-1]     # (N, Ds) -> (Ds,)
+        obs = states                # (Ds,)
 
         # normalize states
-        assert self.maxmin.normalize_state, "check"
-        if self.maxmin.pad_state_dim != len(obs):
+        assert self.maxmin.normalize_state, "check if state is normalized"
+        if self.maxmin.pad_state_dim is not None and self.maxmin.pad_state_dim != len(obs):
             obs = pad_to_len(obs, self.maxmin.pad_state_dim, dim=0)[0]
-        obs = self.maxmin.normalize_state_func(obs) # shape (32,)
-        obs = obs[np.newaxis, np.newaxis, :] # (32,) -> (1, 1, 32)
-
+        obs = self.maxmin.normalize_state_func(obs) # shape (43,)
+        obs = obs[np.newaxis, np.newaxis, :] # (43,) -> (1, 1, 43)
 
         image_input = self.preprocess_image(imgs)
         batch_images = [image_input['cam0']] # batch size == 1
 
-
         conditions = {}
-        
         text_instructions = [instruction] # len == 1
-
         return {'imgs': batch_images, 'text_instructions': text_instructions, 'obs': obs, 'conditions': conditions}
 
     async def websocket_handler(self, websocket: WebSocket):
@@ -340,12 +325,11 @@ class Server:
                     interval = time.time() - self.start_time_obs
                     self.start_time_obs = time.time()
                     print(f"[WebSocket] receive_obs interval: {interval} seconds")
-                    # Parse and update latest_obs
                     this_o = self._parse_obs_payload(payload)
                     with self.obs_lock:
                         self.latest_obs = this_o
                     
-                    # If control loop hasn't started, start it
+                    # If control loop hasn't started, start it automatically
                     if not self._control_loop_started and self.latest_obs is not None:
                         self._start_control_loop()
 
@@ -492,7 +476,6 @@ class Server:
     
 
     def _setup_routes(self):
-        """设置所有路由"""
         @self.app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
             self._loop = asyncio.get_event_loop()

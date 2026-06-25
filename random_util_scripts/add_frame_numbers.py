@@ -7,7 +7,7 @@ import glob
 from pathlib import Path
 ### END CLAUDE ###
 import cv2
-
+import os 
 
 def add_frame_numbers(input_path: str, output_path: str) -> None:
     cap = cv2.VideoCapture(input_path)
@@ -67,7 +67,10 @@ if __name__ == "__main__":
         for mp4 in mp4_files:
             p = Path(mp4)
             out = str(p.parent / (p.stem + args.suffix + p.suffix))
-            add_frame_numbers(mp4, out)
+            if os.path.isfile(out):
+                print(f"Skipping {out}, already exists...")
+            else:
+                add_frame_numbers(mp4, out)
     else:
         if args.output is None:
             parser.error("output is required when input is a file")
@@ -82,7 +85,6 @@ python3 -u random_util_scripts/add_frame_numbers.py \
 ../saved_inference/2026-05-15_15-57-17/deployment_video_30hz_timesteps.mp4
 
 python3 -u random_util_scripts/add_frame_numbers.py \
-../saved_inference/deployment_videos
 ../saved_inference/deployment_videos
 
 

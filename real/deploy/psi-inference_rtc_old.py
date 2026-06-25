@@ -28,7 +28,8 @@ class RSCamera:
     def __init__(self):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
-        self.socket.connect("tcp://192.168.123.164:5556")
+        # self.socket.connect("tcp://192.168.123.164:5556")
+        self.socket.connect("tcp://192.168.123.164:5558")
 
     def get_frame(self):
         self.socket.send(b"get_frame")

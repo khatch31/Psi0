@@ -84,10 +84,20 @@ class RealTimeChunkController:
         self.device = self.policy.device
         self.H     = prediction_horizon
 
+        ### CLAUDE ### Serialize all diffusion sampling. The inference-loop thread and the
+        ### reset() executor thread both call into self.policy, which shares a single stateful
+        ### noise_scheduler (_step_index). Concurrent use races: one thread's set_timesteps()
+        ### resets _step_index to None while another thread's step() does `_step_index += 1`,
+        ### causing "unsupported operand type(s) for +=: 'NoneType' and 'int'". This lock makes
+        ### prediction mutually exclusive across threads. Defined before the warmup calls below.
+        self._predict_lock = threading.Lock()
+        ### END CLAUDE ###
+
         self.s_min = min_exec_horizon
 
         self.t: int = 0
         self.inference_counter: int = 0
+        self.start_timestamp = time.time()
 
         # from datetime import datetime
         # self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -186,98 +196,138 @@ class RealTimeChunkController:
                     os._exit(1)  # 强制退出整个程序
     
     def _predict_action_rtc(self, o, A_prev, d, s):
-        A_new = self.policy.predict_action_with_training_rtc_flow(
-                    observations=o['imgs'],
-                    # states=torch.from_numpy(o['obs']).to(self.device),
-                    states=torch.from_numpy(np.zeros_like(o['obs'])).to(self.device), ### ZERO OUT ###
-                    traj2ds=None,
-                    instructions=o['text_instructions'],
-                    num_inference_steps = 8,
-                    # num_inference_steps = 4, ### DUMMY CLIENT ###
-                    prev_actions=torch.from_numpy(A_prev[np.newaxis, :, :]).to(self.device), # (H, D) -> (1, H, D)
-                    inference_delay=d,
-                    max_delay=8
-                )[0].float().detach().cpu().numpy() # (1, H, D) -> (H, D)
+        
+        ### CLAUDE ### Hold the predict lock around the policy call so the inference-loop thread
+        ### and the reset() thread never use the shared noise_scheduler concurrently.
+        with self._predict_lock:
+            timestamp = time.time() - self.start_timestamp
 
-        # A_new[..., -8:] = 0.0 ### ZERO OUT ###
+            A_new = self.policy.predict_action_with_training_rtc_flow(
+                        observations=o['imgs'],
+                        # states=torch.from_numpy(o['obs']).to(self.device),
+                        states=torch.from_numpy(np.zeros_like(o['obs'])).to(self.device), ### ZERO OUT ###
+                        traj2ds=None,
+                        instructions=o['text_instructions'],
+                        num_inference_steps = 8,
+                        # num_inference_steps = 4, ### DUMMY CLIENT ###
+                        # prev_actions=torch.from_numpy(A_prev[np.newaxis, :, :]).to(self.device), # (H, D) -> (1, H, D)
+                        prev_actions=torch.from_numpy(A_prev[np.newaxis, :, :-2]).to(self.device), # (H, D) -> (1, H, D)
+                        inference_delay=d,
+                        max_delay=8
+                    )[0].float().detach().cpu().numpy() # (1, H, D) -> (H, D)
+            ### END CLAUDE ###
 
-        save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/policy_time_inference")
-        obs_dir = save_dir / "observations"
-        act_dir = save_dir / "actions"
-        img_dir = save_dir / "images"
-        obs_dir.mkdir(parents=True, exist_ok=True)
-        act_dir.mkdir(parents=True, exist_ok=True)
-        img_dir.mkdir(parents=True, exist_ok=True)
+            # A_new[..., -8:] = 0.0 ### ZERO OUT ###
 
-        obs_file = obs_dir / f"obs_{s}_{self.inference_counter}.pkl"
-        actions_file = act_dir / f"actions_{s}_{self.inference_counter}.npy"
+            save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/policy_time_inference")
+            obs_dir = save_dir / "observations"
+            act_dir = save_dir / "actions"
+            img_dir = save_dir / "images"
+            obs_dir.mkdir(parents=True, exist_ok=True)
+            act_dir.mkdir(parents=True, exist_ok=True)
+            img_dir.mkdir(parents=True, exist_ok=True)
 
-        with open(obs_file, 'wb') as f:
-            pickle.dump(o, f)
+            obs_file = obs_dir / f"obs_{s}_{self.inference_counter}.pkl"
+            actions_file = act_dir / f"actions_{s}_{self.inference_counter}.npy"
 
-        # with open(actions_file, 'wb') as f:
-        #     pickle.dump(A_new, f)
-        np.save(actions_file, A_new)
+            
+
+            
+            timestamp_arr = np.array([timestamp for _ in range(A_new.shape[0])]).astype(A_new.dtype)
+            timestamp_arr = np.expand_dims(timestamp_arr, axis=-1)
+            inference_counter_arr = np.array([self.inference_counter for _ in range(A_new.shape[0])]).astype(A_new.dtype)
+            inference_counter_arr = np.expand_dims(inference_counter_arr, axis=-1)
+
+            A_new = np.concatenate([A_new, inference_counter_arr, timestamp_arr], axis=-1)
+
+            o["timestamp"] = timestamp
+            o["inference_counter"] = self.inference_counter
 
 
-        # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
-        # o["imgs"][0][0].size
-        images = o["imgs"]
+            with open(obs_file, 'wb') as f:
+                pickle.dump(o, f)
 
-        for batch_idx, batch in enumerate(images):
-            for img_idx, img in enumerate(batch):
-                img_file = img_dir / f"img_{s}_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
-                img.save(img_file)
+            # with open(actions_file, 'wb') as f:
+            #     pickle.dump(A_new, f)
+            np.save(actions_file, A_new)
 
-        self.inference_counter += 1
 
-        return A_new
+            # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
+            # o["imgs"][0][0].size
+            images = o["imgs"]
+
+            for batch_idx, batch in enumerate(images):
+                for img_idx, img in enumerate(batch):
+                    img_file = img_dir / f"img_{s}_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
+                    img.save(img_file)
+
+            self.inference_counter += 1
+
+            return A_new
     
     def _predict_action(self, o):
-        normalized_actions = self.policy.predict_action(
-                    observations=o['imgs'],
-                    # states=torch.from_numpy(o['obs']).to(self.device),
-                    states=torch.from_numpy(np.zeros_like(o['obs'])).to(self.device), ### ZERO OUT ###
-                    traj2ds=None,
-                    instructions=o['text_instructions'],
-                    num_inference_steps = 8,
-                )[0].float().detach().cpu().numpy() # (1, H, D) -> (H, D)
-
-        # normalized_actions[..., -8:] = 0.0 ### ZERO OUT ###
         
-        save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/policy_time_inference")
-        obs_dir = save_dir / "observations"
-        act_dir = save_dir / "actions"
-        img_dir = save_dir / "images"
-        obs_dir.mkdir(parents=True, exist_ok=True)
-        act_dir.mkdir(parents=True, exist_ok=True)
-        img_dir.mkdir(parents=True, exist_ok=True)
 
-        obs_file = obs_dir / f"obs_initial_{self.inference_counter}.pkl"
-        actions_file = act_dir / f"actions_initial_{self.inference_counter}.npy"
+        ### CLAUDE ### Hold the predict lock around the policy call so the inference-loop thread
+        ### and the reset() thread never use the shared noise_scheduler concurrently.
+        with self._predict_lock:
+            timestamp = time.time() - self.start_timestamp
 
-        with open(obs_file, 'wb') as f:
-            pickle.dump(o, f)
+            normalized_actions = self.policy.predict_action(
+                        observations=o['imgs'],
+                        # states=torch.from_numpy(o['obs']).to(self.device),
+                        states=torch.from_numpy(np.zeros_like(o['obs'])).to(self.device), ### ZERO OUT ###
+                        traj2ds=None,
+                        instructions=o['text_instructions'],
+                        num_inference_steps = 8,
+                    )[0].float().detach().cpu().numpy() # (1, H, D) -> (H, D)
+            ### END CLAUDE ###
 
-        # with open(actions_file, 'wb') as f:
-        #     pickle.dump(normalized_actions, f)
-        np.save(actions_file, normalized_actions)
+            # normalized_actions[..., -8:] = 0.0 ### ZERO OUT ###
+            
+            save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/policy_time_inference")
+            obs_dir = save_dir / "observations"
+            act_dir = save_dir / "actions"
+            img_dir = save_dir / "images"
+            obs_dir.mkdir(parents=True, exist_ok=True)
+            act_dir.mkdir(parents=True, exist_ok=True)
+            img_dir.mkdir(parents=True, exist_ok=True)
 
-        # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
-        # o["imgs"][0][0].size
-        images = o["imgs"]
+            obs_file = obs_dir / f"obs_initial_{self.inference_counter}.pkl"
+            actions_file = act_dir / f"actions_initial_{self.inference_counter}.npy"
 
-        ### CLAUDE ### Save images to PNG files for debugging/analysis
-        for batch_idx, batch in enumerate(images):
-            for img_idx, img in enumerate(batch):
-                img_file = img_dir / f"img_initial_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
-                img.save(img_file)
-        ### END CLAUDE ### 
+            timestamp_arr = np.array([timestamp for _ in range(normalized_actions.shape[0])]).astype(normalized_actions.dtype)
+            timestamp_arr = np.expand_dims(timestamp_arr, axis=-1)
+            inference_counter_arr = np.array([self.inference_counter for _ in range(normalized_actions.shape[0])]).astype(normalized_actions.dtype)
+            inference_counter_arr = np.expand_dims(inference_counter_arr, axis=-1)
+
+            normalized_actions = np.concatenate([normalized_actions, inference_counter_arr, timestamp_arr], axis=-1)
+
+            o["timestamp"] = timestamp
+            o["inference_counter"] = self.inference_counter
+
+            with open(obs_file, 'wb') as f:
+                pickle.dump(o, f)
+
+            # with open(actions_file, 'wb') as f:
+            #     pickle.dump(normalized_actions, f)
+            np.save(actions_file, normalized_actions)
+
+            # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
+            # o["imgs"][0][0].size
+            images = o["imgs"]
+
+            ### CLAUDE ### Save images to PNG files for debugging/analysis
+            for batch_idx, batch in enumerate(images):
+                for img_idx, img in enumerate(batch):
+                    img_file = img_dir / f"img_initial_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
+                    img.save(img_file)
+            ### END CLAUDE ### 
 
 
-        self.inference_counter += 1
+            self.inference_counter += 1
 
-        return normalized_actions
+            return normalized_actions
 
     ### CLAUDE ### Reset controller: clear history and get fresh action prediction using _predict_action (no history)
     def reset(self, o_new: Dict[str, Any]):
@@ -600,7 +650,9 @@ class Server:
             
             # 2. Execute step
             action = self.controller.step(obs_next) # (1, D)
-            pred_action = self._postprocess_action(action) # (1, D)
+            action_info = action[:, 36:]
+            # pred_action = self._postprocess_action(action) # (1, D)
+            pred_action = self._postprocess_action(action[:, :36]) # (1, D)
 
             # color_print("\naction.shape:", action.shape, style="yellow")
             # color_print("action:", action, style="yellow")
@@ -615,21 +667,25 @@ class Server:
                     obs_dir = save_dir / "observations"
                     act_dir = save_dir / "actions"
                     pred_act_dir = save_dir / "pred_actions"
+                    act_info_dir = save_dir / "action_infos"
                     img_dir = save_dir / "images"
                     obs_dir.mkdir(parents=True, exist_ok=True)
                     act_dir.mkdir(parents=True, exist_ok=True)
                     pred_act_dir.mkdir(parents=True, exist_ok=True)
+                    act_info_dir.mkdir(parents=True, exist_ok=True)
                     img_dir.mkdir(parents=True, exist_ok=True)
 
                     obs_file = obs_dir / f"obs_{self.inference_counter}.pkl"
                     actions_file = act_dir / f"actions_{self.inference_counter}.npy"
                     pred_actions_file = pred_act_dir / f"pred_actions_{self.inference_counter}.npy"
+                    act_infos_file = act_info_dir / f"action_infos_{self.inference_counter}.npy"
 
                     with open(obs_file, 'wb') as f:
                         pickle.dump(obs_next, f)
 
                     np.save(actions_file, action)
                     np.save(pred_actions_file, pred_action)
+                    np.save(act_infos_file, action_info)
 
 
 

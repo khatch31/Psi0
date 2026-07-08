@@ -1,0 +1,799 @@
+import asyncio
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
+from pydantic import BaseModel
+from collections import deque
+import threading
+import time
+import copy
+
+import os
+import sys
+import json
+import tyro
+# import draccus
+import uvicorn
+import numpy as np
+from PIL import Image
+from pathlib import Path
+from typing import Dict, Any, List
+import os.path as osp
+import pickle
+from datetime import datetime
+
+from rich.console import Console
+console = Console()
+def color_print(*args, markup=False, style="red"):
+    console.print(*args, style=style, markup=markup)
+
+from psi.models.psi0 import Psi0Model 
+
+# os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+# Ensure imports work regardless of current working directory
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
+from psi.config.config import LaunchConfig, ServerConfig
+from psi.deploy.helpers import *
+
+# from pipelines import ActionPipeline
+# from misc import move_to_device
+from psi.utils import parse_args_to_tyro_config, pad_to_len, seed_everything
+
+from psi.utils.overwatch import initialize_overwatch 
+overwatch = initialize_overwatch(__name__)
+
+
+
+PREDICT_HORIZON = 30          # == H
+MIN_EXEC_HORIZON = 15         # == s_min # TODO: should match D_INIT, ideally s_min >= d_real
+DELAY_BUFFER_SIZE = 6        # == delay_buffer_size
+D_INIT = 6                   # == d_init # TODO: placeholder, needs calculation
+CTRL_PERIOD_SEC = 1. / 30       # 30Hz
+
+PSI_HOME = os.environ["PSI_HOME"]
+
+color_print("PSI_HOME:", PSI_HOME, style="cyan")
+
+import sys
+from IPython.core.debugger import Pdb
+class ForkedIPdb(Pdb):
+    """An ipdb subclass that can be used from a forked multiprocessing child."""
+
+    def interaction(self, *args, **kwargs):
+        _stdin = sys.stdin
+        try:
+            sys.stdin = open('/dev/stdin')
+            super().interaction(*args, **kwargs)
+        finally:
+            sys.stdin = _stdin
+
+class RealTimeChunkController:
+    def __init__(self,
+                 policy: Psi0Model,
+                 prediction_horizon: int = PREDICT_HORIZON,
+                 min_exec_horizon: int = MIN_EXEC_HORIZON,
+                 delay_buf_size: int = DELAY_BUFFER_SIZE,
+                 d_init: int = D_INIT,
+                 o_first: np.ndarray | None = None,
+                 timestamp: str = None): # type: ignore
+
+        self.policy : Psi0Model = policy
+        self.device = self.policy.device
+        self.H     = prediction_horizon
+
+        ### CLAUDE ### Serialize all diffusion sampling. The inference-loop thread and the
+        ### reset() executor thread both call into self.policy, which shares a single stateful
+        ### noise_scheduler (_step_index). Concurrent use races: one thread's set_timesteps()
+        ### resets _step_index to None while another thread's step() does `_step_index += 1`,
+        ### causing "unsupported operand type(s) for +=: 'NoneType' and 'int'". This lock makes
+        ### prediction mutually exclusive across threads. Defined before the warmup calls below.
+        self._predict_lock = threading.Lock()
+        ### END CLAUDE ###
+
+        self.s_min = min_exec_horizon
+
+        self.t: int = 0
+        self.inference_counter: int = 0
+        self.start_timestamp = time.time()
+
+        # from datetime import datetime
+        # self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.timestamp = timestamp
+        color_print(f"[RealTimeChunkController] self.timestamp: {self.timestamp}", style="green")
+        assert o_first != None, "please provide o_first"
+
+        A_first = self._predict_action(o_first) # (H, D)
+
+        # warmup the model
+        for i in range (2):
+            _ = self._predict_action_rtc(copy.deepcopy(o_first), np.concatenate([copy.deepcopy(A_first[self.s_min:, :]), np.zeros((self.s_min, A_first.shape[1]), dtype=A_first.dtype)], axis=0), d_init, self.t)
+        print("Model warmed up")
+
+        self.A_cur = A_first # (H, D)
+        self.o_cur: Dict[str, Any] | None = None 
+
+        self.Q = deque([d_init], maxlen=delay_buf_size)
+
+        ### CLAUDE ### Store d_init and delay_buf_size for use in reset()
+        self.d_init = d_init
+        self.delay_buf_size = delay_buf_size
+        ### END CLAUDE ###
+
+        self.M = threading.Lock()
+        self.C = threading.Condition(self.M)
+
+        self._infer_th = threading.Thread(target=self._inference_loop, daemon=True)
+        self._infer_th.start()
+
+    def replace_prev_actions_to_obs(self, o, previous_rpy, previous_height):
+        o['obs'] = np.concatenate([o['obs'][:, :, :28], previous_rpy[np.newaxis, np.newaxis, :], previous_height[np.newaxis, np.newaxis, :], o['obs'][:, :, 32:]], axis=-1) # (1, 1, 28) -> (1, 1, 32)
+        return o
+
+        
+    def step(self, obs_next: Dict[str, Any]): # consume a_(t-1) and provide o_t
+        with self.C:
+            self.t += 1
+            self.o_cur = obs_next
+            self.C.notify()
+            if self.t-1 >= len(self.A_cur):
+                single_action = self.A_cur[-1]
+                print("failed")
+            else:
+                single_action = self.A_cur[self.t - 1]
+            return single_action[np.newaxis, :] # (1, D)
+
+    def _inference_loop(self):
+        color_print("Started inference loop...", style="yellow")
+        while True:
+            with self.C:
+                try:
+                    while self.t < self.s_min:
+                        self.C.wait() # wait until notified and get the lock
+                    s   = self.t
+
+                    # FIXME: 
+                    # 1. maybe bug at "s-2"
+                    # 2. inputs should be : normalize_states(denormalize_action(A_cur[s-2])) 
+                    #    but in our current data, the stats for rpy and height are nearly the same, 
+                    #    so "normalize_states(denormalize_action())" equals to doing nothing.
+
+                    assert (s-2) >= 0
+                    self.o_cur = self.replace_prev_actions_to_obs(self.o_cur, copy.deepcopy(self.A_cur[s-2, 28:31]), copy.deepcopy(self.A_cur[s-2, 31:32]))
+                    #
+
+                    o   = copy.deepcopy(self.o_cur)
+                    
+                    d   = max(self.Q)
+                    # d   = min(max(self.Q), 7) ### DUMMY CLIENT ###
+                    # A_prev = copy.deepcopy(torch.cat([self.A_cur[s:, :], torch.zeros((s, self.A_cur.shape[1]), device=self.A_cur.device, dtype=self.A_cur.dtype)], dim=0)) # (H, D)
+                    A_prev = np.concatenate([copy.deepcopy(self.A_cur[s:, :]), np.zeros((s, self.A_cur.shape[1]), dtype=self.A_cur.dtype)], axis=0) # (H, D)
+
+                    inference_start = time.perf_counter()
+                    self.C.release()
+                    # color_print(f"\ns: {s}", style="yellow")
+                    # color_print(f"o: {o}", style="yellow")
+                    # state = o['obs']
+                    # color_print(f"state.shape: {state.shape}", style="yellow")
+                    # color_print(f"d: {d}", style="yellow")  
+                    A_new = self._predict_action_rtc(o, A_prev, d, s)
+                    # color_print(f"A_new: {A_new}", style="yellow")
+                    self.C.acquire()
+
+                    self.A_cur = A_new
+                    self.t = self.t - s
+                    self.Q.append(self.t)          
+                    # self.C.notify_all()
+                    print(f"[inference]  latency={time.perf_counter()-inference_start:.4f}s  s={s}  d={d}  self.t={self.t}")
+                except Exception as e:
+                    print(f"\n[ERROR] Inference loop crashed!")
+                    print(f"Error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    print("\n[FATAL] Stopping program...")
+                    os._exit(1)  # 强制退出整个程序
+    
+    def _predict_action_rtc(self, o, A_prev, d, s):
+        
+        ### CLAUDE ### Hold the predict lock around the policy call so the inference-loop thread
+        ### and the reset() thread never use the shared noise_scheduler concurrently.
+        with self._predict_lock:
+            timestamp = time.time() - self.start_timestamp
+
+            A_new = self.policy.predict_action_with_training_rtc_flow(
+                        observations=o['imgs'],
+                        # states=torch.from_numpy(o['obs']).to(self.device),
+                        states=torch.from_numpy(np.zeros_like(o['obs'])).to(self.device), ### ZERO OUT ###
+                        traj2ds=None,
+                        instructions=o['text_instructions'],
+                        num_inference_steps = 8,
+                        # num_inference_steps = 4, ### DUMMY CLIENT ###
+                        # prev_actions=torch.from_numpy(A_prev[np.newaxis, :, :]).to(self.device), # (H, D) -> (1, H, D)
+                        prev_actions=torch.from_numpy(A_prev[np.newaxis, :, :-2]).to(self.device), # (H, D) -> (1, H, D)
+                        inference_delay=d,
+                        max_delay=8
+                    )[0].float().detach().cpu().numpy() # (1, H, D) -> (H, D)
+            ### END CLAUDE ###
+
+            # A_new[..., -8:] = 0.0 ### ZERO OUT ###
+
+            save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/policy_time_inference")
+            obs_dir = save_dir / "observations"
+            act_dir = save_dir / "actions"
+            img_dir = save_dir / "images"
+            obs_dir.mkdir(parents=True, exist_ok=True)
+            act_dir.mkdir(parents=True, exist_ok=True)
+            img_dir.mkdir(parents=True, exist_ok=True)
+
+            obs_file = obs_dir / f"obs_{s}_{self.inference_counter}.pkl"
+            actions_file = act_dir / f"actions_{s}_{self.inference_counter}.npy"
+
+            
+
+            
+            timestamp_arr = np.array([timestamp for _ in range(A_new.shape[0])]).astype(A_new.dtype)
+            timestamp_arr = np.expand_dims(timestamp_arr, axis=-1)
+            inference_counter_arr = np.array([self.inference_counter for _ in range(A_new.shape[0])]).astype(A_new.dtype)
+            inference_counter_arr = np.expand_dims(inference_counter_arr, axis=-1)
+
+            A_new = np.concatenate([A_new, inference_counter_arr, timestamp_arr], axis=-1)
+
+            o["timestamp"] = timestamp
+            o["inference_counter"] = self.inference_counter
+
+
+            with open(obs_file, 'wb') as f:
+                pickle.dump(o, f)
+
+            # with open(actions_file, 'wb') as f:
+            #     pickle.dump(A_new, f)
+            np.save(actions_file, A_new)
+
+
+            # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
+            # o["imgs"][0][0].size
+            images = o["imgs"]
+
+            for batch_idx, batch in enumerate(images):
+                for img_idx, img in enumerate(batch):
+                    img_file = img_dir / f"img_{s}_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
+                    img.save(img_file)
+
+            self.inference_counter += 1
+
+            return A_new
+    
+    def _predict_action(self, o):
+        
+
+        ### CLAUDE ### Hold the predict lock around the policy call so the inference-loop thread
+        ### and the reset() thread never use the shared noise_scheduler concurrently.
+        with self._predict_lock:
+            timestamp = time.time() - self.start_timestamp
+
+            normalized_actions = self.policy.predict_action(
+                        observations=o['imgs'],
+                        # states=torch.from_numpy(o['obs']).to(self.device),
+                        states=torch.from_numpy(np.zeros_like(o['obs'])).to(self.device), ### ZERO OUT ###
+                        traj2ds=None,
+                        instructions=o['text_instructions'],
+                        num_inference_steps = 8,
+                    )[0].float().detach().cpu().numpy() # (1, H, D) -> (H, D)
+            ### END CLAUDE ###
+
+            # normalized_actions[..., -8:] = 0.0 ### ZERO OUT ###
+            
+            save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/policy_time_inference")
+            obs_dir = save_dir / "observations"
+            act_dir = save_dir / "actions"
+            img_dir = save_dir / "images"
+            obs_dir.mkdir(parents=True, exist_ok=True)
+            act_dir.mkdir(parents=True, exist_ok=True)
+            img_dir.mkdir(parents=True, exist_ok=True)
+
+            obs_file = obs_dir / f"obs_initial_{self.inference_counter}.pkl"
+            actions_file = act_dir / f"actions_initial_{self.inference_counter}.npy"
+
+            timestamp_arr = np.array([timestamp for _ in range(normalized_actions.shape[0])]).astype(normalized_actions.dtype)
+            timestamp_arr = np.expand_dims(timestamp_arr, axis=-1)
+            inference_counter_arr = np.array([self.inference_counter for _ in range(normalized_actions.shape[0])]).astype(normalized_actions.dtype)
+            inference_counter_arr = np.expand_dims(inference_counter_arr, axis=-1)
+
+            normalized_actions = np.concatenate([normalized_actions, inference_counter_arr, timestamp_arr], axis=-1)
+
+            o["timestamp"] = timestamp
+            o["inference_counter"] = self.inference_counter
+
+            with open(obs_file, 'wb') as f:
+                pickle.dump(o, f)
+
+            # with open(actions_file, 'wb') as f:
+            #     pickle.dump(normalized_actions, f)
+            np.save(actions_file, normalized_actions)
+
+            # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
+            # o["imgs"][0][0].size
+            images = o["imgs"]
+
+            ### CLAUDE ### Save images to PNG files for debugging/analysis
+            for batch_idx, batch in enumerate(images):
+                for img_idx, img in enumerate(batch):
+                    img_file = img_dir / f"img_initial_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
+                    img.save(img_file)
+            ### END CLAUDE ### 
+
+
+            self.inference_counter += 1
+
+            return normalized_actions
+
+    ### CLAUDE ### Reset controller: clear history and get fresh action prediction using _predict_action (no history)
+    def reset(self, o_new: Dict[str, Any]):
+        """
+        Reset controller state. Runs _predict_action (no RTC history) on the provided observation
+        to produce a fresh A_cur, then resets t, o_cur, and Q so the inference loop starts clean.
+        Safe to call from any thread.
+        """
+        color_print("[RealTimeChunkController] Reset: running fresh prediction...", style="cyan")
+        # Run inference outside the lock — _predict_action is slow
+        A_fresh = self._predict_action(o_new)
+
+        with self.C:
+            self.A_cur = A_fresh
+            self.t = 0
+            self.o_cur = None
+            self.Q = deque([self.d_init], maxlen=self.delay_buf_size)
+            self.C.notify_all()
+
+        color_print("[RealTimeChunkController] Reset complete", style="cyan")
+    ### END CLAUDE ###
+
+
+class Server:
+
+    def __init__(
+        self, 
+        policy:str, 
+        run_dir: Path, 
+        ckpt_step: int | str  = "latest", 
+        device: str = "cuda:0", 
+        enable_rtc: bool = False,
+        action_exec_horizon: int | None = None
+    ):
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available. Please check your CUDA installation.")
+        
+        self.device = torch.device(device)
+        overwatch.info(f"Using device: {self.device}")
+        overwatch.info(f"Serving {policy}")
+
+        overwatch.info(f"Using device: {self.device}")
+        overwatch.info(f"Serving {policy}")
+
+        assert osp.exists(run_dir), f"run_dir {run_dir} does not exist!"
+        assert osp.exists(run_dir / "checkpoints" / f"ckpt_{ckpt_step}"), f"ckpt {ckpt_step} does not exist!"
+        assert osp.exists(run_dir / "run_config.json"), f"run config does not exist!"
+        
+        # first build dynamic config 
+        config_: LaunchConfig = parse_args_to_tyro_config(run_dir / "argv.txt") # type: ignore
+        # then load it from previsously saved json
+        conf = (run_dir / "run_config.json").open("r").read()
+        launch_config = config_.model_validate_json(conf)
+        seed_everything(launch_config.seed or 42)
+
+
+        overwatch.info("loading action model...")
+        from psi.models.psi0 import Psi0Model 
+        self.model = Psi0Model.from_pretrained(run_dir, ckpt_step, launch_config, device=device)
+        self.model.to(device)
+        self.model.eval()
+
+        from psi.config.transform import SimpleRepackTransform, Psi0ModelTransform, ActionStateTransform
+        self.maxmin:ActionStateTransform = launch_config.data.transform.field # type:ignore
+        self.model_transform:Psi0ModelTransform = launch_config.data.transform.model # type:ignore
+
+
+        self.Da = launch_config.model.action_dim # type:ignore
+        self.Tp = launch_config.model.action_chunk_size # type:ignore
+        self.Ta = action_exec_horizon or launch_config.model.action_exec_horizon # type:ignore
+        assert self.Ta <= self.Tp, "action_exec_horizon is too big"
+        self.launch_cfg = launch_config
+        self.count = 0
+
+
+        # control - shared state with locks
+        self.latest_obs = None
+        self.latest_action = None
+        self.action_version = 0  # Used by client to check if there's a new action
+        
+        self.obs_lock = threading.Lock()
+        self.action_lock = threading.Lock()
+        self.save_lock = threading.Lock()
+        self.inference_counter = 0
+
+        self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        color_print(f"[Server] self.timestamp: {self.timestamp}", style="green")
+
+        self.controller = None
+        self._control_loop_started = False
+        
+        # WebSocket: asyncio event to notify when new action is ready
+        self.app = FastAPI()
+        self._setup_routes()
+        
+        self._action_ready_event: asyncio.Event = None  # Will be created in async context
+        self._active_websocket: WebSocket = None
+        self._loop = None  # asyncio event loop reference for thread-safe notification
+        self.start_time = time.time()
+        self.start_time_obs = time.time()
+
+    def _init_controller(self, o_first):
+        controller = RealTimeChunkController(policy=self.model, o_first=o_first, timestamp=self.timestamp)
+        return controller
+
+    def _postprocess_action(self, action):
+        # return self.launch_cfg.data.data_transforms.denormalize_action(action)
+        return self.maxmin.denormalize(action) # denormalization is done in the pipeline
+
+
+
+    def preprocess_image(self, image_dict: Dict[str, Any]) -> Dict[str, Any]:
+        imgs = {}
+        # # FIXME 
+        # image_key_to_cam_idx = {'front_stereo_left': 0, 'front_stereo_right': 1, 'left_future_traj_2d': 4, 'right_future_traj_2d': 5, 'side': 3, 'side_future_traj_2d': 7, 'wrist': 2, 'wrist_future_traj_2d': 6}
+        # for img_key in self.launch_config.data.transform.repack.image_keys:
+        #     cam_idx = image_key_to_cam_idx[img_key] #self.launch_config.data.transform.repack.image_key_to_cam_idx[img_key]
+        #     imgs[f"cam{cam_idx}"] = self._process_img(image_dict[f"{img_key}".replace("image_", "")])#[None, ...]
+
+        for k in image_dict.keys():
+            imgs[k] = self._process_img(image_dict[k])
+
+
+        return imgs
+
+    def _process_img(self, img):
+        from torchvision.transforms import v2
+
+        transforms = [self.model_transform.resize(), self.model_transform.center_crop()]
+        t = v2.Compose(transforms)
+
+        return [t(img)]
+
+    def _parse_obs_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse observation payload and return processed obs dict"""
+        request = RequestMessage.deserialize(payload)
+        image_dict, instruction, history_dict, state_dict, gt_action, dataset_name = \
+                    request.image, request.instruction, request.history, request.state, request.gt_action, request.dataset_name
+        condition_dict = request.condition
+        overwatch.info(f"Instruction: {instruction}")
+            
+        # parts = instruction.split(".")
+        # if len(parts) > 1 and parts[-1].isdigit():
+        #     instruction = parts[0].lower() + "."
+        #     img_id = int(parts[-1])
+        #     assert False
+        # else:
+        instruction = instruction.lower()
+        # img_id = -1
+
+
+        # TODO support image history
+        # img dict: {"video": np.array(...).shape(480, 640, 3)}
+        imgs = {}
+        for cam_idx, img_key in enumerate(self.launch_cfg.data.transform.repack.image_keys):
+            imgs[f"cam{cam_idx}"] = Image.fromarray(np.clip(image_dict[img_key], 0, 255).astype(np.uint8))
+        
+        hand_joints = state_dict["hand_joints"].copy() # shape (14,)
+        arm_joints = state_dict["arm_joints"].copy() # shape (14,)
+        tmp_torso_rpy = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        tmp_torso_height = np.array([0.75], dtype=np.float32)
+        obs = np.concatenate([hand_joints, arm_joints, tmp_torso_rpy, tmp_torso_height], axis=-1) # (32,)
+
+        # normalize states
+        assert self.maxmin.normalize_state, "check"
+        if self.maxmin.pad_state_dim != len(obs):
+            obs = pad_to_len(obs, self.maxmin.pad_state_dim, dim=0)[0]
+        obs = self.maxmin.normalize_state_func(obs) # shape (32,)
+        obs = obs[np.newaxis, np.newaxis, :] # (32,) -> (1, 1, 32)
+
+
+        image_input = self.preprocess_image(imgs)
+        batch_images = [image_input['cam0']] # batch size == 1
+
+
+        conditions = {}
+        
+        text_instructions = [instruction] # len == 1
+
+        return {'imgs': batch_images, 'text_instructions': text_instructions, 'obs': obs, 'conditions': conditions}
+
+    async def websocket_handler(self, websocket: WebSocket):
+        """
+        WebSocket handler for bidirectional communication:
+        - Receive obs from client at high frequency
+        - Send action to client immediately when new action is ready
+        """
+        await websocket.accept()
+        self._active_websocket = websocket
+        
+        # Create asyncio event for action notification
+        self._action_ready_event = asyncio.Event()
+        
+        print("[WebSocket] Client connected")
+        async def receive_obs():
+            """Continuously receive obs from client"""
+            try:
+                while True:
+                    # Receive obs from client
+                    data = await websocket.receive_text()
+                    payload = json.loads(data)
+                    interval = time.time() - self.start_time_obs
+                    self.start_time_obs = time.time()
+                    print(f"[WebSocket] receive_obs interval: {interval} seconds")
+                    # Parse and update latest_obs
+                    this_o = self._parse_obs_payload(payload)
+                    with self.obs_lock:
+                        self.latest_obs = this_o
+                    
+                    # If control loop hasn't started, start it
+                    if not self._control_loop_started and self.latest_obs is not None:
+                        self._start_control_loop()
+
+                    # # 清空缓冲区，只保留最新的
+                    # latest_data = None
+                    # while True:
+                    #     try:
+                    #         # 非阻塞地读取所有可用消息
+                    #         data = await asyncio.wait_for(
+                    #             websocket.receive_text(), 
+                    #             timeout=0.001  # 1ms超时
+                    #         )
+                    #         latest_data = data  # 保留最新的
+                    #     except asyncio.TimeoutError:
+                    #         break  # 没有更多消息了
+                    
+                    # if latest_data:
+                    #     payload = json.loads(latest_data)
+                    #     interval = time.time() - self.start_time_obs
+                    #     self.start_time_obs = time.time()
+                    #     print(f"[WebSocket] receive_obs interval: {interval} seconds")
+                        
+                    #     this_o = self._parse_obs_payload(payload)
+                    #     with self.obs_lock:
+                    #         self.latest_obs = this_o
+                        
+                    #     if not self._control_loop_started and self.latest_obs is not None:
+                    #         self._start_control_loop()
+                        
+            except WebSocketDisconnect:
+                print("[WebSocket] Client disconnected (receive)")
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"[WebSocket] Receive error: {e}")
+        
+        async def send_action():
+            """Send action to client when new action is ready"""
+            try:
+                while True:
+                    # Wait for new action to be ready
+                    await self._action_ready_event.wait()
+                    self._action_ready_event.clear()
+
+                    interval = time.time() - self.start_time
+                    self.start_time = time.time()
+                    print(f"[WebSocket] send_action interval: {interval} seconds")
+                    
+                    # Get the action
+                    with self.action_lock:
+                        action = self.latest_action
+                        version = self.action_version
+                        self.latest_action = None  # Reset after sending
+                    
+                    if action is not None:
+                        # Send action to client
+                        response = ResponseMessage(action, err=0.0)
+                        resp_dict = response.serialize()
+                        resp_dict["version"] = version
+                        await websocket.send_text(json.dumps(resp_dict))
+                        print(f"[WebSocket] Sent action, version={version}")
+                    else:
+                        assert False, "action is None"
+                        
+            except WebSocketDisconnect:
+                print("[WebSocket] Client disconnected (send)")
+            except Exception as e:
+                print(f"[WebSocket] Send error: {e}")
+        
+        try:
+            # Run both tasks concurrently
+            await asyncio.gather(receive_obs(), send_action())
+        except Exception as e:
+            print(f"[WebSocket] Connection closed: {e}")
+        finally:
+            self._active_websocket = None
+            print("[WebSocket] Handler finished")
+
+    def _start_control_loop(self):
+        """Start control loop thread"""
+        if self._control_loop_started:
+            return
+        self._control_loop_started = True
+        
+        # Initialize controller with first obs
+        with self.obs_lock:
+            o_first = copy.deepcopy(self.latest_obs)
+            
+        self.controller = self._init_controller(o_first) # wait for model warm up
+        
+        # Start control loop thread
+        self._control_thread = threading.Thread(target=self._control_loop, daemon=True)
+        self._control_thread.start()
+        print("[control loop] started")
+
+    def _control_loop(self):
+        """
+        Control loop: Execute controller.step strictly every CTRL_PERIOD_SEC
+        And expect at next time, the obs_next sent from client is the one after executing the action
+        """
+        next_tick = time.perf_counter()
+        prev_tick = time.perf_counter()
+        
+        while True:
+            # loop_start = time.time()
+            
+            # 1. Get latest obs
+            with self.obs_lock:
+                obs_next = copy.deepcopy(self.latest_obs)
+            
+            # 2. Execute step
+            action = self.controller.step(obs_next) # (1, D)
+            action_info = action[:, 36:]
+            # pred_action = self._postprocess_action(action) # (1, D)
+            pred_action = self._postprocess_action(action[:, :36]) # (1, D)
+
+            # color_print("\naction.shape:", action.shape, style="yellow")
+            # color_print("action:", action, style="yellow")
+            # color_print("pred_action.shape:", pred_action.shape, style="yellow")
+            # color_print("pred_action:", pred_action, style="yellow")
+            pred_action[..., -5] = 0.75 # need to hardcode 0.75 for torso height here? ### ZERO OUT ###
+            # color_print("pred_action:", pred_action, style="yellow")
+
+            with self.save_lock:
+                if obs_next is not None:
+                    save_dir = Path(f"{PSI_HOME}/saved_inference/{self.timestamp}/deployment_time_inference")
+                    obs_dir = save_dir / "observations"
+                    act_dir = save_dir / "actions"
+                    pred_act_dir = save_dir / "pred_actions"
+                    act_info_dir = save_dir / "action_infos"
+                    img_dir = save_dir / "images"
+                    obs_dir.mkdir(parents=True, exist_ok=True)
+                    act_dir.mkdir(parents=True, exist_ok=True)
+                    pred_act_dir.mkdir(parents=True, exist_ok=True)
+                    act_info_dir.mkdir(parents=True, exist_ok=True)
+                    img_dir.mkdir(parents=True, exist_ok=True)
+
+                    obs_file = obs_dir / f"obs_{self.inference_counter}.pkl"
+                    actions_file = act_dir / f"actions_{self.inference_counter}.npy"
+                    pred_actions_file = pred_act_dir / f"pred_actions_{self.inference_counter}.npy"
+                    act_infos_file = act_info_dir / f"action_infos_{self.inference_counter}.npy"
+
+                    with open(obs_file, 'wb') as f:
+                        pickle.dump(obs_next, f)
+
+                    np.save(actions_file, action)
+                    np.save(pred_actions_file, pred_action)
+                    np.save(act_infos_file, action_info)
+
+
+
+                    # [[<PIL.Image.Image image mode=RGB size=320x240 at 0x7B752C177CA0>]]
+                    # o["imgs"][0][0].size
+                    images = obs_next["imgs"]
+
+                    for batch_idx, batch in enumerate(images):
+                        for img_idx, img in enumerate(batch):
+                            img_file = img_dir / f"img_{self.inference_counter}_batch{batch_idx}_img{img_idx}.png"
+                            img.save(img_file)
+
+                    self.inference_counter += 1
+
+
+            
+            
+            # 3. Update latest_action
+            with self.action_lock:
+                self.latest_action = pred_action
+                self.action_version += 1
+            
+            # 4. Notify WebSocket that new action is ready
+            if self._action_ready_event is not None:
+                # Thread-safe way to set asyncio event from another thread
+                try:
+                    self._loop.call_soon_threadsafe(self._action_ready_event.set)
+                except Exception as e:
+                    print(f"[control loop] Failed to notify WebSocket: {e}")
+            
+            # elapsed = (time.time() - loop_start) * 1000
+            # print(f"[control loop] step took {elapsed:.1f}ms, version={self.action_version}")
+            
+            # 5. Wait until next ctrl period
+            next_tick += CTRL_PERIOD_SEC
+            sleep_time = next_tick - time.perf_counter()
+            now = time.perf_counter()
+            interval = now - prev_tick
+            prev_tick = now
+            print(f"[control loop] interval: {interval} seconds")
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+                # delay_ms(sleep_time*1000)
+            else:
+                print(f"[control loop] WARNING: missed tick by {-sleep_time*1000:.1f}ms")
+                next_tick = time.perf_counter()
+    
+
+    def _setup_routes(self):
+        """设置所有路由"""
+        @self.app.websocket("/ws")
+        async def websocket_endpoint(websocket: WebSocket):
+            self._loop = asyncio.get_event_loop()
+            await self.websocket_handler(websocket)
+        
+        @self.app.get("/health")
+        async def health_check():
+            return {"status": "ok"}
+
+        ### CLAUDE ### POST /reset: clear history and latest obs, re-run fresh prediction from latest obs
+        @self.app.post("/reset")
+        async def reset_controller():
+            with self.obs_lock:
+                o_latest = copy.deepcopy(self.latest_obs)
+
+            if self.controller is None:
+                return {"status": "error", "message": "Controller not yet initialized — send at least one obs first"}
+            if o_latest is None:
+                return {"status": "error", "message": "No observation available to seed reset"}
+
+            # Run blocking inference in a thread pool so we don't block the event loop
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.controller.reset, o_latest)
+
+            # NOTE: do NOT clear latest_obs here — the control loop calls step(latest_obs)
+            # every tick and would pass None into the controller, crashing the inference loop
+
+            return {"status": "ok"}
+        ### END CLAUDE ###
+
+    def run(self, host: str = "0.0.0.0", port: int = 8000) -> None:
+        print(f"Server listens on {host}:{port}")
+        print(f"WebSocket endpoint: ws://{host}:{port}/ws")
+        try:
+            uvicorn.run(self.app, host=host, port=port)
+        except Exception as e:
+            print(f"Server crashed, {e}")
+        finally:
+            print("Server stopped.")
+            exit(1)
+
+def serve(cfg: ServerConfig) -> None:
+    overwatch.info("Server :: Initializing Policy")
+    assert cfg.policy is not None, "which policy to serve?"
+    assert cfg.rtc, "this server is for rtc"
+    server = Server(
+        cfg.policy, 
+        Path(cfg.run_dir), 
+        cfg.ckpt_step, 
+        cfg.device,
+        cfg.rtc,
+        cfg.action_exec_horizon)
+    
+    print("Server :: Spinning Up")
+    server.run(cfg.host, cfg.port)
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()  # take environment variables from .env file
+    config = tyro.cli(ServerConfig, config=(tyro.conf.ConsolidateSubcommandArgs,))
+    serve(config)

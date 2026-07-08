@@ -16,11 +16,11 @@ echo "PSI_HOME: $PSI_HOME"
 # # CHECKPOINT_STEP=20000
 # CHECKPOINT_STEP=30000
 
-# CHECKPOINT_DIR=$PSI_HOME/training_output/finetune/put_dumpling_into_plate_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2606171731
-# CHECKPOINT_STEP=2500
+CHECKPOINT_DIR=$PSI_HOME/training_output/finetune/put_dumpling_into_plate_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2606171731
+CHECKPOINT_STEP=40000
 
-CHECKPOINT_DIR=$PSI_HOME/training_output/finetune/push_duck_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2606181756
-CHECKPOINT_STEP=10000
+# CHECKPOINT_DIR=$PSI_HOME/training_output/finetune/push_duck_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2606181756
+# CHECKPOINT_STEP=10000
 
 # CHECKPOINT_DIR=$PSI_HOME/training_output/finetune/stack_two_boxes.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2606250328
 # CHECKPOINT_STEP=30000
@@ -31,14 +31,13 @@ CHECKPOINT_STEP=10000
 
 
 # python src/psi/deploy/psi_serve_rtc-trainingtimertc.py \
-python src/psi/deploy/psi_serve_simple_zeros.py \
+python src/psi/deploy/psi0_serve_simple_zeros.py \
     --host 0.0.0.0 \
     --port 8014 \
-    --action_exec_horizon 30 \
+    --action_exec_horizon 24 \
     --policy psi \
-    --rtc \
     --run-dir=${CHECKPOINT_DIR} \
     --ckpt-step=${CHECKPOINT_STEP}
 
-# bash scripts/deploy/serve_psi0-rtc.sh
+# bash scripts/deploy/serve_psi0-simple-zeros.sh
 # curl -X POST http://localhost:8014/reset

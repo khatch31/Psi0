@@ -103,6 +103,9 @@ torchrun --nproc_per_node=$NPROC_PER_NODE --master_port=$master_port scripts/tra
 # scripts/train/psi0/finetune-he-noproprio-psi0.sh open_a_drawer_g1 open_a_drawer_g1_second 29504
 # scripts/train/psi0/finetune-he-noproprio-psi0.sh push_duck_g1 push_duck_g1 
 # scripts/train/psi0/finetune-he-noproprio-psi0.sh erase_a_table_g1 erase_a_table_g1 29501
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh use_eraser_to_wipe_desk_g1 use_eraser_to_wipe_desk_g1 29500
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh fold_towel fold_towel 29501
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh insert_flower_into_vase insert_flower_into_vase 29502
 
 
 

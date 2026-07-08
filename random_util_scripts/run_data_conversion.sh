@@ -12,8 +12,15 @@
 # task=stack_two_cubes_g1
 # task=push_duck_g1
 
-suite=Tool_use
-task=erase_a_table_g1
+# suite=Tool_use
+# task=erase_a_table_g1
+# task=use_eraser_to_wipe_desk_g1
+
+# suite=deformable
+# task=fold_towel
+
+suite=Precision
+task=insert_flower_into_vase
 
 echo "PSI_HOME: $PSI_HOME"
 cd ..

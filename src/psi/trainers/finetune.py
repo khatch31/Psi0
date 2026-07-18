@@ -261,6 +261,9 @@ class FinetuneTrainer(Trainer):
             padding_side="right",
         )
 
+        color_print(f"self.task_cfg.train_batch_size: {self.task_cfg.train_batch_size}", style="green")
+        color_print(f"self.task_cfg.val_batch_size: {self.task_cfg.val_batch_size}", style="green")
+
         # create training and validation dataloaders
         self.train_dataloader = torch.utils.data.DataLoader(
             train_dataset,

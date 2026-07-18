@@ -26,11 +26,6 @@ from datasets.utils.logging import disable_progress_bar, set_verbosity_error
 from huggingface_hub import create_repo, create_tag, upload_large_folder
 from tqdm import tqdm
 
-from rich.console import Console
-console = Console()
-def color_print(*args, markup=False, style="red"):
-    console.print(*args, style=style, markup=markup)
-
 CODE_VERSION = "v2.1"
 FPS = 30
 
@@ -135,15 +130,7 @@ def iter_tasks(data_root: Path, tasks:list[str]=[]) -> Iterator[Tuple[str, Path,
 
 
 class HE2LeRobotConverter:
-    ### CLAUDE ### Add subsample factor. subsample=N splits each 30Hz episode into N phase-offset
-    ### 10Hz episodes (frames p::N for p in 0..N-1) so ALL frames are kept, just re-grouped.
-    # def __init__(self):
-    def __init__(self, subsample: int = 1):
-    ### END CLAUDE ###
-        ### CLAUDE ### Keep every Nth frame; effective output rate is FPS/subsample (e.g. 30/3 = 10Hz)
-        self.subsample = subsample
-        self.output_fps = FPS / subsample
-        ### END CLAUDE ###
+    def __init__(self):
         self.features = Features(
             {
                 "states": Sequence(Value("float32")),
@@ -313,9 +300,6 @@ class HE2LeRobotConverter:
         episode_dir: Path,
         out_base: Path,
         chunks_size: int,
-        ### CLAUDE ### phase = which offset of the subsampled sequence this episode represents
-        phase: int = 0,
-        ### END CLAUDE ###
     ) -> Tuple[int, int, Dict[str, Any]]:
         # pr = cProfile.Profile()
         # pr.enable()
@@ -331,15 +315,6 @@ class HE2LeRobotConverter:
 
         data_list = read_json_list(episode_dir / "data.json")
         assert len(data_list) > 0, f"data.json malformed in {episode_dir}"
-
-        ### CLAUDE ### Take this phase's slice (frames phase::subsample) so the N phases together
-        ### partition all frames into N separate 10Hz episodes. Path lists below inherit this.
-        if self.subsample > 1:
-            data_list = data_list[phase :: self.subsample]
-        if len(data_list) == 0:
-            # Degenerate: original episode shorter than subsample -> this phase has no frames.
-            return episode_index, 0, {}
-        ### END CLAUDE ###
 
         def safe_path(episode_dir, f, key):
             p = f.get(key)
@@ -373,10 +348,7 @@ class HE2LeRobotConverter:
                 {
                     **obs,
                     "action": act,
-                    ### CLAUDE ### Use effective (subsampled) rate so timestamps stay real-time
-                    # "timestamp": i * (1.0 / FPS),
-                    "timestamp": i * (1.0 / self.output_fps),
-                    ### END CLAUDE ###
+                    "timestamp": i * (1.0 / FPS),
                     "frame_index": i,
                     "episode_index": episode_index,
                     "index": i,  # TODO: global index if needed
@@ -419,10 +391,7 @@ class HE2LeRobotConverter:
             for p in rgb_paths:
                 yield iio.imread(p)
 
-        ### CLAUDE ### Write mp4 at the effective rate so it plays back in real time
-        # iio.imwrite(video_tmp, list(frame_iter()), fps=FPS, codec="libx264")
-        iio.imwrite(video_tmp, list(frame_iter()), fps=self.output_fps, codec="libx264")
-        ### END CLAUDE ###
+        iio.imwrite(video_tmp, list(frame_iter()), fps=FPS, codec="libx264")
         # iio.imwrite(
         #     video_tmp, 
         #     list(frame_iter()), 
@@ -454,18 +423,13 @@ class HE2LeRobotConverter:
                     "std": action_std,
                     "count": [len(rows)],
                 },
-                ### CLAUDE ### Use effective (subsampled) rate for timestamp stats
                 "timestamp": {
                     "min": [0.0],
-                    # "max": [(len(rows) - 1) / FPS],
-                    # "mean": [((len(rows) - 1) / 2) / FPS],
-                    # "std": [len(rows) / (2 * FPS * math.sqrt(3))],
-                    "max": [(len(rows) - 1) / self.output_fps],
-                    "mean": [((len(rows) - 1) / 2) / self.output_fps],
-                    "std": [len(rows) / (2 * self.output_fps * math.sqrt(3))],
+                    "max": [(len(rows) - 1) / FPS],
+                    "mean": [((len(rows) - 1) / 2) / FPS],
+                    "std": [len(rows) / (2 * FPS * math.sqrt(3))],
                     "count": [len(rows)],
                 },
-                ### END CLAUDE ###
             },
         }
         meta_dir = out_base.parent / "meta"
@@ -495,10 +459,7 @@ class HE2LeRobotConverter:
         data_dir.mkdir(parents=True, exist_ok=True)
         # existing = {p.stem for p in data_dir.rglob("episode_*.parquet")}
 
-        ### CLAUDE ### episode_sources tuples now carry a trailing phase (int)
-        # self.episode_sources: list[tuple[int, Path, str, str, str]] = []
-        self.episode_sources: list[tuple[int, Path, str, str, str, int]] = []
-        ### END CLAUDE ###
+        self.episode_sources: list[tuple[int, Path, str, str, str]] = []
         task_index = 0
         self.tasks_meta = {}
         ep_index = 0
@@ -542,26 +503,17 @@ class HE2LeRobotConverter:
         for (meta, rtype) in zip(all_ep_dirs, robot_types):
             task_idx, ep_dir, desc, tname, cat_name = meta
             if robot_type == "both" or rtype == robot_type:
-                ### CLAUDE ### Emit one output episode per phase offset so no frames are discarded.
-                ### Each phase gets its own consecutive ep_index (matches enumerate index on a
-                ### fresh run). subsample=1 -> single phase, identical to previous behavior.
-                # filtered.append((task_idx, ep_dir, ep_index, desc, tname))
-                # ep_index += 1
-                for phase in range(self.subsample):
-                    filtered.append((task_idx, ep_dir, ep_index, desc, tname, phase))
-                    ep_index += 1
-                ### END CLAUDE ###
+                filtered.append((task_idx, ep_dir, ep_index, desc, tname))
+                ep_index += 1
 
         if not filtered:
             raise ValueError(f"No episodes matched robot type '{robot_type}'.")
 
-        ### CLAUDE ### Tuple now carries phase (6 fields)
         filtered = [
-            (task_idx, ep_dir, ep_index, desc, tname, phase)
-            for (task_idx, ep_dir, ep_index, desc, tname, phase) in filtered
+            (task_idx, ep_dir, ep_index, desc, tname)
+            for (task_idx, ep_dir, ep_index, desc, tname) in filtered
             if not episode_complete(ep_index, work_dir, chunks_size, done_eps)
         ]
-        ### END CLAUDE ###
 
         self.episode_sources = filtered
 
@@ -574,16 +526,10 @@ class HE2LeRobotConverter:
         total = len(self.episode_sources)
         data_stats: list[tuple[int, int, dict[str, any]]] = []
         with ProcessPoolExecutor(max_workers=num_workers) as ex:
-            ### CLAUDE ### Unpack phase (6-tuple) and pass it through to make_one_episode
-            # futures = [
-            #     ex.submit(self.make_one_episode, task_idx, i, ep_dir, data_dir, chunks_size)
-            #     for i, (task_idx, ep_dir, _, _, _) in enumerate(self.episode_sources)
-            # ]
             futures = [
-                ex.submit(self.make_one_episode, task_idx, i, ep_dir, data_dir, chunks_size, phase)
-                for i, (task_idx, ep_dir, _, _, _, phase) in enumerate(self.episode_sources)
+                ex.submit(self.make_one_episode, task_idx, i, ep_dir, data_dir, chunks_size)
+                for i, (task_idx, ep_dir, _, _, _) in enumerate(self.episode_sources)
             ]
-            ### END CLAUDE ###
             for fut in tqdm(as_completed(futures), total=total, desc="Processing new episodes", unit="ep"):
                 ep_idx, n_frames, stats = fut.result()
                 if n_frames <= 0:
@@ -614,10 +560,7 @@ class HE2LeRobotConverter:
         dataset_cursor = 0
         ep_rows_meta = []
 
-        ### CLAUDE ### Tuple now carries phase (6 fields); use it to record source-episode + phase
-        # for (task_idx, ep_dir, ep_index, task_dsc, tname) in sorted(self.episode_sources, key=lambda x: x[0]):
-        for (task_idx, ep_dir, ep_index, task_dsc, tname, phase) in sorted(self.episode_sources, key=lambda x: x[0]):
-        ### END CLAUDE ###
+        for (task_idx, ep_dir, ep_index, task_dsc, tname) in sorted(self.episode_sources, key=lambda x: x[0]):
             n = self.lengths_by_episode.get(ep_index, 0)
             if n <= 0:
                 continue
@@ -629,14 +572,7 @@ class HE2LeRobotConverter:
                     "dataset_from_index": dataset_cursor,
                     "dataset_to_index": dataset_cursor + (n - 1),
                     "robot_type": self.get_robot_type(ep_dir),
-                    "instruction": task_dsc,
-                    ### CLAUDE ### Record which original recording this episode came from and which
-                    ### phase-offset it is, so phases of the same source can be regrouped later.
-                    ### The N phases of one source get consecutive ep_index values, so integer
-                    ### division by subsample recovers the shared source id.
-                    "source_episode": ep_index // self.subsample,
-                    "phase": phase,
-                    ### END CLAUDE ###
+                    "instruction": task_dsc
                 }
             )
             dataset_cursor += n
@@ -661,10 +597,7 @@ class HE2LeRobotConverter:
                 "shape": [480, 640, 3],
                 "names": ["height", "width", "channel"],
                 "video_info": {
-                    ### CLAUDE ### Report the effective (subsampled) fps in metadata
-                    # "video.fps": float(FPS),
-                    "video.fps": float(self.output_fps),
-                    ### END CLAUDE ###
+                    "video.fps": float(FPS),
                     "video.codec": "h264",
                     "video.pix_fmt": "yuv420p",
                     "video.is_depth_map": False,
@@ -693,10 +626,7 @@ class HE2LeRobotConverter:
             total_videos=self.num_episodes,
             total_chunks=math.ceil(self.num_episodes / self.chunks_size),
             chunks_size=self.chunks_size,
-            ### CLAUDE ### Report the effective (subsampled) fps in info.json (int when integral)
-            # fps=FPS,
-            fps=int(self.output_fps) if float(self.output_fps).is_integer() else self.output_fps,
-            ### END CLAUDE ###
+            fps=FPS,
             data_path="data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
             video_path="videos/chunk-{episode_chunk:03d}/egocentric/episode_{episode_index:06d}.mp4",
             features=features_meta,
@@ -730,22 +660,7 @@ def main():
     parser.add_argument("--robot-type", type=str, choices=["h1", "g1", "both"], default="both",
                         help="Filter episodes by robot type (h1, g1, or both)")
     parser.add_argument("--task", type=str, default=None, help="Process only this specific task (category/task_name)")
-    ### CLAUDE ### Add subsample arg: split each 30Hz episode into N phase-offset FPS/N-Hz episodes
-    parser.add_argument(
-        "--subsample",
-        type=int,
-        default=1,
-        help="Split each episode into N phase-offset episodes at FPS/N Hz (e.g. 3 -> 10Hz), keeping all frames.",
-    )
-    ### END CLAUDE ###
     args = parser.parse_args()
-
-    ### CLAUDE ### Validate subsample factor
-    if args.subsample < 1:
-        raise ValueError(f"--subsample must be >= 1, got {args.subsample}")
-    ### END CLAUDE ###
-
-    color_print(f"args.subsample:", args.subsample, style="green")
 
     data_root = Path(args.data_root).expanduser().resolve()
     work_dir = Path(args.work_dir).resolve()
@@ -756,10 +671,7 @@ def main():
     for d in [work_dir / "data", work_dir / "videos", work_dir / "meta"]:
         d.mkdir(parents=True, exist_ok=True)
 
-    ### CLAUDE ### Pass subsample factor into the converter
-    # pipeline = HE2LeRobotConverter()
-    pipeline = HE2LeRobotConverter(subsample=args.subsample)
-    ### END CLAUDE ###
+    pipeline = HE2LeRobotConverter()
     if not pipeline.run(data_root, work_dir, args.chunks_size, args.num_workers, args.robot_type, args.task):
         return
     pipeline.write_meta(work_dir)

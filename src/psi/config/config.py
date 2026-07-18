@@ -55,6 +55,14 @@ class TrainConfig(BaseModel):
     max_checkpoints_to_keep: int | None = None
     validation_steps: int = 50
 
+    ### CLAUDE ### Add flag to upload each checkpoint to S3 (via `aws s3 sync`) then delete local copy.
+    ###            Declared as int (not bool) so the CLI form --train.save_ckpts_to_s3=1 parses;
+    ###            tyro renders a bool field as a valueless flag and would reject =1. 0 = disabled.
+    ###            s3_save_uri is the base s3:// prefix to sync checkpoints to.
+    save_ckpts_to_s3: int = 0
+    s3_save_uri: str | None = None
+    ### END CLAUDE ###
+
     learning_rate: float = 1e-5
     # linear, cosine, cosine_with_restarts, polynomial, constant, constant_with_warmup
     lr_scheduler_type: str = "cosine_with_min_lr"
@@ -198,3 +206,11 @@ class LaunchConfig(BaseModel):
 
         if self.timestamp is None:
             self.timestamp = datetime.datetime.now().strftime("%y%m%d%H%M")
+
+        ### CLAUDE ### Fail fast if S3 checkpoint upload is requested without a destination URI.
+        if self.train.save_ckpts_to_s3 and not self.train.s3_save_uri:
+            raise ValueError(
+                "train.save_ckpts_to_s3 is set but --train.s3_save_uri was not provided. "
+                "Pass e.g. --train.s3_save_uri=s3://my-bucket/my/prefix/"
+            )
+        ### END CLAUDE ###

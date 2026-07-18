@@ -24,6 +24,11 @@ import accelerate
 import random
 import shutil
 
+from rich.console import Console
+console = Console()
+def color_print(*args, markup=False, style="red"):
+    console.print(*args, style=style, markup=markup)
+
 from psi.utils import initialize_overwatch
 overwatch = initialize_overwatch(__name__)
 
@@ -422,7 +427,40 @@ class Trainer(ABC):
                         overwatch.warning(f"Failed to remove old checkpoint {old_ckpt_path}: {e}")
 
         self.accelerator.wait_for_everyone()
+
+        ### CLAUDE ### Optionally upload the checkpoint to S3 and free local disk.
+        ###            Runs on the main process only; a trailing barrier keeps ranks in lockstep.
+        if self.train_cfg.save_ckpts_to_s3:
+            if self.accelerator.is_main_process:
+                self._sync_checkpoint_to_s3(ckpt_dir)
+            self.accelerator.wait_for_everyone()
+        ### END CLAUDE ###
+
         return ckpt_dir
+
+    ### CLAUDE ### Upload a local checkpoint dir to S3 via `aws s3 sync`, block until done, then delete local.
+    def _sync_checkpoint_to_s3(self, ckpt_dir: str) -> None:
+        import subprocess
+        s3_uri = self.train_cfg.s3_save_uri
+        assert s3_uri, "save_ckpts_to_s3 is set but --train.s3_save_uri was not provided"
+        # Mirror the local layout under the S3 prefix, dropping the machine-specific
+        # output_dir so S3 gets {name}/{run_name}/checkpoints/ckpt_{step}.
+        # rel = os.path.relpath(ckpt_dir, self.cfg.train.output_dir)
+        rel = os.path.relpath(self.project_dir, self.cfg.train.output_dir)
+        s3_dest = s3_uri.rstrip("/") + "/" + rel
+        overwatch.info(f"[s3] Syncing {self.project_dir} -> {s3_dest}")
+        color_print(f"[s3] Syncing {self.project_dir} to {s3_dest}...", style="green")
+        try:
+            subprocess.run(["aws", "s3", "sync", self.project_dir, s3_dest, "--exclude", "wandb/*"], check=True)  # blocks until done
+        except subprocess.CalledProcessError as e:
+            # Do NOT delete local copy if the upload failed.
+            overwatch.error(f"[s3] Upload failed (exit {e.returncode}); keeping local {ckpt_dir}")
+            raise
+        overwatch.info(f"[s3] Upload complete; removing local {ckpt_dir}")
+        color_print(f"[s3] Upload complete; removing local {ckpt_dir}...", style="green")
+        shutil.rmtree(ckpt_dir, ignore_errors=True)
+        color_print(f"[s3] Removal of local checkpoint dir complete.", style="green")
+    ### END CLAUDE ###
 
     def resume_from_checkpoint(self) -> tuple[int, Optional[str]]:
         """ resume from a checkpoint if specified in the config. 

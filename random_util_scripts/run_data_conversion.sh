@@ -19,22 +19,33 @@
 # suite=deformable
 # task=fold_towel
 
-suite=Precision
-task=insert_flower_into_vase
+# suite=Precision
+# task=insert_flower_into_vase
 
 echo "PSI_HOME: $PSI_HOME"
 cd ..
 pwd
 
+# python3 -u scripts/data/raw_to_lerobot_he.py \
+#   --data-root=$PSI_HOME/data/HE_RAW/$suite \
+#   --work-dir=$PSI_HOME/data/real \
+#   --repo-id=psi0-real-g1 \
+#   --robot-type=g1 \
+#   --task=$task
+
+# task=put_dumpling_into_plate_g1
+task=use_eraser_to_wipe_desk_g1
+
 python3 -u scripts/data/raw_to_lerobot_he.py \
-  --data-root=$PSI_HOME/data/HE_RAW/$suite \
-  --work-dir=$PSI_HOME/data/real \
+  --data-root=$PSI_HOME/data/HumanoidEveryday_raw \
+  --work-dir=$PSI_HOME/data/real_10Hz \
   --repo-id=psi0-real-g1 \
   --robot-type=g1 \
-  --task=$task
+  --task=$task \
+  --subsample 3
 
 python3 -u scripts/data/calc_modality_stats.py \
-  --work-dir=$PSI_HOME/data/real \
+  --work-dir=$PSI_HOME/data/real_10Hz \
   --task=$task
 
-cp $PSI_HOME/data/real/$task/meta/stats.json $PSI_HOME/data/real/$task/meta/stats_psi0.json
+cp $PSI_HOME/data/real_10Hz/$task/meta/stats.json $PSI_HOME/data/real_10Hz/$task/meta/stats_psi0.json

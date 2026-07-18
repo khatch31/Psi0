@@ -566,10 +566,18 @@ def load_model(urdf_path: str) -> pin.Model:
 
 
 class HE2WePretrainConverter:
-    def __init__(self, robot_type: str, urdf_map: Dict[str, str]):
+    ### CLAUDE ### Add subsample factor so the output can be downsampled from FPS to FPS/subsample
+    # def __init__(self, robot_type: str, urdf_map: Dict[str, str]):
+    def __init__(self, robot_type: str, urdf_map: Dict[str, str], subsample: int = 1):
+    ### END CLAUDE ###
         self.robot_type = robot_type
         self.urdf_map = urdf_map
         self.action_keys = action_keys_for_robot(robot_type)
+
+        ### CLAUDE ### Keep every Nth frame; effective output rate is FPS/subsample (e.g. 30/3 = 10Hz)
+        self.subsample = subsample
+        self.output_fps = FPS / subsample
+        ### END CLAUDE ###
 
         action_features = {key: Sequence(Value("float32")) for key in self.action_keys}
 
@@ -689,6 +697,12 @@ class HE2WePretrainConverter:
             data_list = read_json_list(episode_dir / "data.json")
             assert len(data_list) > 0, f"data.json malformed in {episode_dir}"
 
+            ### CLAUDE ### Downsample frames by self.subsample before deriving path lists so every
+            ### per-frame stream (rgb/depth/lidar/actions/obs) is subsampled consistently
+            if self.subsample > 1:
+                data_list = data_list[:: self.subsample]
+            ### END CLAUDE ###
+
             def safe_path(episode_dir, f, key):
                 p = f.get(key)
                 return (episode_dir / p).resolve() if p else None
@@ -717,7 +731,10 @@ class HE2WePretrainConverter:
                     {
                         **obs,
                         **action_fields,
-                        "timestamp": i * (1.0 / FPS),
+                        ### CLAUDE ### Use effective (subsampled) rate so timestamps stay real-time
+                        # "timestamp": i * (1.0 / FPS),
+                        "timestamp": i * (1.0 / self.output_fps),
+                        ### END CLAUDE ###
                         "frame_index": i,
                         "episode_index": episode_index,
                         "index": i,
@@ -755,7 +772,10 @@ class HE2WePretrainConverter:
                 for p in rgb_paths:
                     yield iio.imread(p)
 
-            iio.imwrite(video_tmp, list(frame_iter()), fps=FPS, codec="libx264")
+            ### CLAUDE ### Write mp4 at the effective rate so it plays back in real time
+            # iio.imwrite(video_tmp, list(frame_iter()), fps=FPS, codec="libx264")
+            iio.imwrite(video_tmp, list(frame_iter()), fps=self.output_fps, codec="libx264")
+            ### END CLAUDE ###
             os.replace(parquet_tmp, parquet_path)
             os.replace(video_tmp, vid_path)
             shutil.rmtree(tmp_dir)
@@ -781,13 +801,18 @@ class HE2WePretrainConverter:
                         "std": action_std,
                         "count": [len(rows)],
                     },
+                    ### CLAUDE ### Use effective (subsampled) rate for timestamp stats
                     "timestamp": {
                         "min": [0.0],
-                        "max": [(len(rows) - 1) / FPS],
-                        "mean": [((len(rows) - 1) / 2) / FPS],
-                        "std": [len(rows) / (2 * FPS * math.sqrt(3))],
+                        # "max": [(len(rows) - 1) / FPS],
+                        # "mean": [((len(rows) - 1) / 2) / FPS],
+                        # "std": [len(rows) / (2 * FPS * math.sqrt(3))],
+                        "max": [(len(rows) - 1) / self.output_fps],
+                        "mean": [((len(rows) - 1) / 2) / self.output_fps],
+                        "std": [len(rows) / (2 * self.output_fps * math.sqrt(3))],
                         "count": [len(rows)],
                     },
+                    ### END CLAUDE ###
                 },
             }
             meta_dir = out_base.parent / "meta"
@@ -986,7 +1011,10 @@ class HE2WePretrainConverter:
                 "shape": [480, 640, 3],
                 "names": ["height", "width", "channel"],
                 "video_info": {
-                    "video.fps": float(FPS),
+                    ### CLAUDE ### Report the effective (subsampled) fps in metadata
+                    # "video.fps": float(FPS),
+                    "video.fps": float(self.output_fps),
+                    ### END CLAUDE ###
                     "video.codec": "h264",
                     "video.pix_fmt": "yuv420p",
                     "video.is_depth_map": False,
@@ -1022,7 +1050,10 @@ class HE2WePretrainConverter:
             total_videos=self.num_episodes,
             total_chunks=math.ceil(self.num_episodes / self.chunks_size),
             chunks_size=self.chunks_size,
-            fps=FPS,
+            ### CLAUDE ### Report the effective (subsampled) fps in info.json (int when integral)
+            # fps=FPS,
+            fps=int(self.output_fps) if float(self.output_fps).is_integer() else self.output_fps,
+            ### END CLAUDE ###
             data_path="data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
             video_path="videos/chunk-{episode_chunk:03d}/egocentric/episode_{episode_index:06d}.mp4",
             features=features_meta,
@@ -1055,6 +1086,14 @@ def main():
     parser.add_argument("--work-dir", type=str, default="_lerobot_build")
     parser.add_argument("--repo-id", type=str)
     parser.add_argument("--chunks-size", type=int, default=1000)
+    ### CLAUDE ### Add subsample arg: keep every Nth frame, effective FPS becomes FPS/subsample
+    parser.add_argument(
+        "--subsample",
+        type=int,
+        default=1,
+        help="Keep every Nth frame; effective FPS becomes FPS/subsample (e.g. 3 -> 10Hz).",
+    )
+    ### END CLAUDE ###
     parser.add_argument("--push", action="store_true")
     parser.add_argument("--private", action="store_true")
     parser.add_argument("--repo-exist-ok", action="store_true")
@@ -1071,6 +1110,11 @@ def main():
     parser.add_argument("--urdf-h1", type=str, default="./real/assets/h1_inspire/urdf/h1_inspire.urdf")
     args = parser.parse_args()
 
+    ### CLAUDE ### Validate subsample factor
+    if args.subsample < 1:
+        raise ValueError(f"--subsample must be >= 1, got {args.subsample}")
+    ### END CLAUDE ###
+
     data_root = Path(args.data_root).expanduser().resolve()
     work_dir = Path(args.work_dir).resolve()
     for d in [work_dir / "data", work_dir / "videos", work_dir / "meta"]:
@@ -1081,7 +1125,10 @@ def main():
         "h1": str(Path(args.urdf_h1).expanduser().resolve()),
     }
 
-    pipeline = HE2WePretrainConverter(args.robot_type, urdf_map)
+    ### CLAUDE ### Pass subsample factor into the converter
+    # pipeline = HE2WePretrainConverter(args.robot_type, urdf_map)
+    pipeline = HE2WePretrainConverter(args.robot_type, urdf_map, subsample=args.subsample)
+    ### END CLAUDE ###
     if args.meta_only:
         pipeline.scan_meta_only(data_root, args.chunks_size, args.num_workers, args.robot_type)
     else:

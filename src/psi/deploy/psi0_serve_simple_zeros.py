@@ -3,9 +3,6 @@ import sys
 import tyro
 import torch
 import time
-### CLAUDE ### Serialize inference so overlapping /act requests never race the model's shared,
-### stateful diffusion noise_scheduler (mirrors psi_serve_rtc-trainingtimertc_zeros.py). This is a
-### no-op for a single synchronous client (the lock is always uncontended).
 import threading
 ### END CLAUDE ###
 import numpy as np
@@ -83,14 +80,29 @@ class Server:
         assert self.Ta <= self.Tp, "action_exec_horizon is too big"
         self.launch_config = launch_config
         self.count = 0
+
+        color_print(f"action_exec_horizon: {action_exec_horizon}", style="green")
+        color_print(f"launch_config.model.action_exec_horizon: {launch_config.model.action_exec_horizon}", style="green")
         
         self.enable_rtc = enable_rtc
-        assert not self.enable_rtc
+        if enable_rtc:
+            assert launch_config.model.rtc, "rtc is not supported for this model" #type:ignore
+            self.rtc_max_delay = launch_config.model.max_delay  # type:ignore
+            color_print(f"self.Tp: {self.Tp}, self.Ta: {self.Ta}, self.rtc_max_delay: {self.rtc_max_delay}", style="green")
+            color_print(f"self.Tp - self.Ta <= self.rtc_max_delay = {self.Tp - self.Ta <= self.rtc_max_delay}", style="green")
+            assert self.Tp - self.Ta <= self.rtc_max_delay, "action_exec_horizon is too big for the given rtc_max_delay and action_chunk_size"
+            self.previous_action = None #np.zeros((self.Tp, self.Da), dtype=np.float32)
+            overwatch.info(f"RTC enabled with max_delay={self.rtc_max_delay}, \n"
+                           f"action_dim={self.Da}, \n"
+                           f"action_chunk_size={self.Tp}, \n"
+                           f"action_exec_horizon={self.Ta}")
         self.last_serve_time = time.monotonic()
 
         ### CLAUDE ### Non-reentrant lock guarding the model inference in predict_action().
         self._predict_lock = threading.Lock()
         ### END CLAUDE ###
+
+        color_print("self.enable_rtc:", self.enable_rtc, style="green")
 
 
     def predict_action(self, payload: Dict[str, Any]) -> JSONResponse:
@@ -119,7 +131,6 @@ class Server:
                     )
                 ).to(self.device)
 
-            assert not self.enable_rtc
             if not self.enable_rtc:
                 ### CLAUDE ### Serialize the diffusion sampling call so overlapping /act requests
                 ### never race the model's shared, stateful noise_scheduler. No-op (uncontended) for
@@ -134,6 +145,38 @@ class Server:
                         traj2ds=None
                     )
                 ### END CLAUDE ###
+            else: # rtc
+                current_time = time.monotonic()
+                if self.previous_action is None or "reset" in history_dict: #  or (current_time - self.last_serve_time) > 30  #if idle more than 60s, reset previous action
+                    overwatch.info("===Reset or first step, without condition===")
+                    raw_pred_actions = self.model.predict_action(
+                        observations=[[t(Image.fromarray(img)) for img in image_dict.values()]], 
+                        # states=states.unsqueeze(0), # B, To, Ds
+                        states=torch.zeros_like(states.unsqueeze(0)), # B, To, Ds   ### ZERO OUT ###
+                        instructions=[instruction], # [Task] * B
+                        num_inference_steps=10, 
+                        traj2ds=None
+                    )
+                else:
+                    overwatch.info("RTC enabled, using RTC inference")
+                    overwatch.info("Last chunk execution loop time: {:.2f}s ago".format(current_time - self.last_serve_time))
+                    prev_actions = np.concatenate([
+                        self.previous_action[None, self.Ta:, :], 
+                        np.zeros((1, self.Ta, self.Da), dtype=np.float32)
+                    ], axis=1) # (1, Tp, Da)
+                    prev_actions = torch.from_numpy(prev_actions).to(self.device)
+
+                    raw_pred_actions = self.model.predict_action_with_training_rtc_flow(
+                        observations=[[t(Image.fromarray(img)) for img in image_dict.values()]], 
+                        # states=states.unsqueeze(0), # B, To, Ds
+                        states=torch.zeros_like(states.unsqueeze(0)), # B, To, Ds ### ZERO OUT ###
+                        instructions=[instruction], # [Task] * B
+                        num_inference_steps=10, 
+                        traj2ds=None,
+                        prev_actions=prev_actions,
+                        inference_delay=(self.Tp - self.Ta), 
+                        max_delay=self.rtc_max_delay
+                    )
 
             raw_pred_actions = raw_pred_actions.reshape(-1, self.Da).cpu().numpy() # (Tp, Da)
             pred_actions = self.maxmin.denormalize(raw_pred_actions) # (Ta, Da)

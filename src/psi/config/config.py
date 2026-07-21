@@ -125,8 +125,12 @@ class ServerConfig(BaseModel):
     policy: str | None = None
     action_exec_horizon: int | None = None
     rtc: bool = False
-    run_dir: str 
-    ckpt_step: int 
+    run_dir: str
+    ckpt_step: int
+    ### CLAUDE ### Control-loop period in seconds, exposed so the rate can be matched to the
+    ### checkpoint's training rate (1/30 for a 30Hz checkpoint, 1/10 for a 10Hz one) instead of
+    ### being hardcoded in the server. Defaults to 30Hz to preserve existing behavior.
+    ctrl_period_sec: float = 1. / 30
 
     @model_validator(mode="after")
     def set_policy(self):

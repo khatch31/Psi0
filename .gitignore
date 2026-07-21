@@ -62,3 +62,5 @@ src/h_rdt/datasets/pretrain/egodex_large_values.txt
 
 workspace/
 real/open_a_drawer_g1/
+
+claude_exports/

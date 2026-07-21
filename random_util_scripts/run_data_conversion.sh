@@ -34,7 +34,10 @@ pwd
 #   --task=$task
 
 # task=put_dumpling_into_plate_g1
-task=use_eraser_to_wipe_desk_g1
+# task=use_eraser_to_wipe_desk_g1
+# task=fold_towel
+# task=insert_flower_into_vase
+task=push_duck_g1
 
 python3 -u scripts/data/raw_to_lerobot_he.py \
   --data-root=$PSI_HOME/data/HumanoidEveryday_raw \

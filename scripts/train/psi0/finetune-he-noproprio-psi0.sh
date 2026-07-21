@@ -1,21 +1,7 @@
 #!/bin/bash
 
-export OMP_NUM_THREADS=32
-# export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
-export CUDA_VISIBLE_DEVICES=0,3,4
-BATCH_SIZE=42
-
-echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
-echo "BATCH_SIZE: $BATCH_SIZE"
-
-source .venv-psi/bin/activate
-
-NPROC_PER_NODE=$(echo $CUDA_VISIBLE_DEVICES | tr ',' '\n' | wc -l)
-ulimit -n 65535
-echo "Training with $NPROC_PER_NODE GPUs"
-
 if [ "$#" -lt 1 ]; then
-    echo "Usage: $0 <task> [exp]"
+    echo "Usage: $0 <task> [exp] [master_port] [cuda_visible_devices] [batch_size] [resume_from_checkpoint] [timestamp] [wandb_id]"
     echo "Example: $0 Pick_toys_into_box_and_lift_and_turn_and_put_on_the_chair_new_target_yaw pick-toys"
     exit 1
 fi
@@ -26,11 +12,34 @@ default_exp=$(echo "$task_words" | awk '{if (NF>=2) print $1 "-" $2; else print 
 export exp=${2:-$default_exp}
 master_port=${3:-29500}
 
-
 echo "Task: $task"
 echo "default_exp: $default_exp"
 echo "Experiment name: $exp"
 echo "master_port: $master_port"
+
+export OMP_NUM_THREADS=32
+# export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+export CUDA_VISIBLE_DEVICES=${4:-0}
+BATCH_SIZE=${5:-128}
+
+RESUME_FROM_CHECKPOINT=${6:-}
+TIMESTAMP=${7:-}
+WANDB_ID=${8:-}
+
+echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
+echo "BATCH_SIZE: $BATCH_SIZE"
+echo "RESUME_FROM_CHECKPOINT: $RESUME_FROM_CHECKPOINT"
+echo "TIMESTAMP: $TIMESTAMP"
+echo "WANDB_ID: $WANDB_ID"
+
+source .venv-psi/bin/activate
+
+NPROC_PER_NODE=$(echo $CUDA_VISIBLE_DEVICES | tr ',' '\n' | wc -l)
+ulimit -n 65535
+echo "Training with $NPROC_PER_NODE GPUs"
+
+
+
 
 args="
 finetune_real_psi0_config \
@@ -89,8 +98,27 @@ finetune_real_psi0_config \
 --model.zero-states \
 --model.zero-last-8-actions \
 --train.save_ckpts_to_s3=1 \
---train.s3_save_uri="s3://tri-ml-sandbox-16011-us-west-2-datasets/kylehatch/world_models_project/psi0_workspace/training_output/10Hz"
+--train.s3_save_uri="s3://tri-ml-sandbox-16011-us-west-2-datasets/kylehatch/world_models_project/psi0_workspace/training_output/10Hz" \
 "
+
+# --train.resume_from_checkpoint=$PSI_HOME/training_output/10Hz/finetune/use_eraser_to_wipe_desk_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus1.2607181730 \
+# --timestamp=2607181730 \
+# --wandb.id=zsejc5mf
+
+if [ -n "$RESUME_FROM_CHECKPOINT" ]; then
+    args="${args} --train.resume_from_checkpoint=$PSI_HOME/training_output/10Hz/finetune/${RESUME_FROM_CHECKPOINT}"
+fi
+
+if [ -n "$TIMESTAMP" ]; then
+    args="${args} --timestamp=${TIMESTAMP}"
+fi
+
+if [ -n "$WANDB_ID" ]; then
+    args="${args} --wandb.id=${WANDB_ID}"
+fi
+
+
+
 ### CLAUDE ### To upload each checkpoint to S3 (via `aws s3 sync`) and then delete the local
 ###            copy to save disk, append --train.save_ckpts_to_s3=1 and --train.s3_save_uri=s3://...
 ###            Both are required together. Default is OFF (save_ckpts_to_s3=0 in TrainConfig).
@@ -104,20 +132,28 @@ finetune_real_psi0_config \
 ###            Default is OFF (zero_last_8_actions=False in Psi0ModelConfig).
 ### END CLAUDE ###
 
+echo "================= args ================="
+echo "$args"
+echo "========================================"
+
 torchrun --nproc_per_node=$NPROC_PER_NODE --master_port=$master_port scripts/train.py \
     ${args}
 
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh place_a_cube_in_a_bag place_a_cube_in_a_bag 29500
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh use_eraser_to_wipe_desk_g1 use_eraser_to_wipe_desk_g1 29500 7 128 \
+# use_eraser_to_wipe_desk_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus1.2607181730 2607181730 zsejc5mf
+
+
 # scripts/train/psi0/finetune-he-noproprio-psi0.sh put_dumpling_into_plate_g1 put_dumpling_into_plate_g1 29501
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh stack_two_boxes stack_two_boxes 29502
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh stack_two_cubes_g1 stack_two_cubes_g1 29503
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh open_a_drawer_g1 open_a_drawer_g1_second 29504
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh push_duck_g1 push_duck_g1 
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh erase_a_table_g1 erase_a_table_g1 29501
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh use_eraser_to_wipe_desk_g1 use_eraser_to_wipe_desk_g1 29500
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh fold_towel fold_towel 29501
-# scripts/train/psi0/finetune-he-noproprio-psi0.sh insert_flower_into_vase insert_flower_into_vase 29502
+
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh fold_towel fold_towel 29502 6 128 \
+# fold_towel.real.flow1000.cosine.lr1.0e-04.b128.gpus1.2607181739 2607181739 uph72cro
 
 
 
-# --data.root_dir=$PSI_HOME/data/real_10Hz \
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh insert_flower_into_vase insert_flower_into_vase 29503 2 128 \
+# insert_flower_into_vase.real.flow1000.cosine.lr1.0e-04.b128.gpus1.2607181744 2607181744 eccf5dp1
+
+# scripts/train/psi0/finetune-he-noproprio-psi0.sh push_duck_g1 push_duck_g1 29504 5 128 \
+# push_duck_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus1.2607181746 2607181746 tn05vi4w
+
+

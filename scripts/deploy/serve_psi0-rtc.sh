@@ -30,13 +30,27 @@ CHECKPOINT_STEP=10000
 
 
 
+### CLAUDE ### Control-loop rate is now an arg rather than a hardcoded constant in the server.
+### Set to 1/30 for a 30Hz checkpoint, 1/10 (0.1) for a 10Hz checkpoint. This must match the rate
+### the checkpoint was trained at, otherwise actions are played back at the wrong speed.
+# CTRL_PERIOD_SEC=$(python -c "print(1./30)")   # 30Hz
+CTRL_PERIOD_SEC=$(python -c "print(1./10)")     # 10Hz
+### END CLAUDE ###
+
+echo "CTRL_PERIOD_SEC: $CTRL_PERIOD_SEC"
+
+### CLAUDE ### Point at the _zeros server variant (zeroed proprio states, /reset endpoint,
+### per-tick inference dumping). The non-zeros server still hardcodes its control period, so
+### --ctrl_period_sec below would be silently ignored there.
 # python src/psi/deploy/psi_serve_rtc-trainingtimertc.py \
-python src/psi/deploy/psi_serve_simple_zeros.py \
+### END CLAUDE ###
+python src/psi/deploy/psi_serve_rtc-trainingtimertc_zeros.py \
     --host 0.0.0.0 \
     --port 8014 \
     --action_exec_horizon 30 \
     --policy psi \
     --rtc \
+    --ctrl_period_sec=${CTRL_PERIOD_SEC} \
     --run-dir=${CHECKPOINT_DIR} \
     --ckpt-step=${CHECKPOINT_STEP}
 

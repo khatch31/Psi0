@@ -11,7 +11,10 @@
 set -euo pipefail
 
 TARGET_DIR="${1:-$HOME/Desktop/world_models_project/psi0_workspace/saved_inference}"
-PATTERN="${2:-2026-06-*}"
+# PATTERN="${2:-2026-06-*}"
+# PATTERN="${2:-2026*}"
+
+PATTERN="*"
 
 cd "$TARGET_DIR"
 

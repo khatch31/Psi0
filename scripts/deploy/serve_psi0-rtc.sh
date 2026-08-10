@@ -16,8 +16,8 @@ echo "PSI_HOME: $PSI_HOME"
 # # CHECKPOINT_STEP=20000
 # CHECKPOINT_STEP=30000
 
-# CHECKPOINT_DIR=$PSI_HOME/training_output/finetune/put_dumpling_into_plate_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2606171731
-# CHECKPOINT_STEP=2500
+CHECKPOINT_DIR=$PSI_HOME/training_output/30Hz/finetune/put_dumpling_into_plate_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2606171731
+CHECKPOINT_STEP=20000
 
 # CHECKPOINT_DIR=$PSI_HOME/training_output/finetune/push_duck_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2606181756
 # CHECKPOINT_STEP=10000
@@ -28,15 +28,15 @@ echo "PSI_HOME: $PSI_HOME"
 # CHECKPOINT_DIR=$PSI_HOME/training_output/finetune/place_a_cube_in_a_bag.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2606170034
 # CHECKPOINT_STEP=20000
 
-CHECKPOINT_DIR=$PSI_HOME/training_output/finetune/push_duck_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus8.2606181756
-CHECKPOINT_STEP=10000
+# CHECKPOINT_DIR=$PSI_HOME/training_output/10Hz/finetune/put_dumpling_into_plate_g1.real.flow1000.cosine.lr1.0e-04.b128.gpus1.2607171832
+# CHECKPOINT_STEP=28000
 
 
 ### CLAUDE ### Control-loop rate is now an arg rather than a hardcoded constant in the server.
 ### Set to 1/30 for a 30Hz checkpoint, 1/10 (0.1) for a 10Hz checkpoint. This must match the rate
 ### the checkpoint was trained at, otherwise actions are played back at the wrong speed.
-# CTRL_PERIOD_SEC=$(python -c "print(1./30)")   # 30Hz
-CTRL_PERIOD_SEC=$(python -c "print(1./10)")     # 10Hz
+CTRL_PERIOD_SEC=$(python -c "print(1./30)")   # 30Hz
+# CTRL_PERIOD_SEC=$(python -c "print(1./10)")     # 10Hz
 ### END CLAUDE ###
 
 echo "CTRL_PERIOD_SEC: $CTRL_PERIOD_SEC"

@@ -8,7 +8,8 @@ def start_client():
     
     server_ip = "192.168.123.164" 
     # socket.connect(f"tcp://{server_ip}:5556")
-    socket.connect(f"tcp://{server_ip}:5558")
+    # socket.connect(f"tcp://{server_ip}:5558")
+    socket.connect(f"tcp://{server_ip}:5559")
 
     print(f"Connected to server at {server_ip}")
     print("Press 'q' to exit.")

@@ -46,7 +46,9 @@ def write_json(filepath, data, indent=2):
 PSI_HOME = os.environ["PSI_HOME"]
 
 if __name__ == "__main__":
-    INF_DIR = f"{PSI_HOME}/saved_inference/2026-06-19/2026-06-19_12-50-05"
+    # INF_DIR = f"{PSI_HOME}/saved_inference/2026-06-19_12-50-05"
+    INF_DIR = f"{PSI_HOME}/saved_inference/2026-07-21_13-16-37"
+
 
     timestep_no_from_file = lambda x: int(os.path.splitext(os.path.basename(x))[0].split("_")[-1])
     action_info_files = glob(os.path.join(INF_DIR, "deployment_time_inference", "action_infos", "action_infos_*.npy"))
@@ -125,5 +127,6 @@ if __name__ == "__main__":
         style="green",
     )
 
+    color_print(f"INF_DIR: {INF_DIR}", style="green")
 
     import ipdb; ipdb.set_trace()
